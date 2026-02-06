@@ -91,34 +91,56 @@ function renderStats() {
 }
 
 // --- VIDEOS GRID ---
-function renderVideos() {
+let currentFiltered = [];
+let currentPage = 0;
+const PAGE_SIZE = 40;
+let observer = null;
+
+function renderVideos(reset = true) {
     const grid = document.getElementById('video-grid');
-    grid.innerHTML = ''; // Clear
 
-    // 1. Filter Data
-    const pFilter = filterPlatform.value;
-    const uFilter = filterUser.value;
+    if (reset) {
+        grid.innerHTML = ''; // Clear
+        currentPage = 0;
 
-    let filtered = allMedia.filter(m => {
-        if (pFilter !== 'ALL' && m.platform !== pFilter) return false;
-        if (uFilter !== 'ALL' && m.userId !== uFilter) return false;
-        return true;
-    });
+        // 1. Filter Data Only on Reset
+        const pFilter = filterPlatform.value;
+        const uFilter = filterUser.value;
 
-    // 2. Render
-    const limit = 50;
-    filtered.slice(0, limit).forEach(media => {
+        currentFiltered = allMedia.filter(m => {
+            if (pFilter !== 'ALL' && m.platform !== pFilter) return false;
+            if (uFilter !== 'ALL' && m.userId !== uFilter) return false;
+            return true;
+        });
+
+        // Sort by date desc (optional, but good for UX)
+        currentFiltered.sort((a, b) => b.scrapedAt - a.scrapedAt);
+    }
+
+    // 2. Pagination Logic
+    const start = currentPage * PAGE_SIZE;
+    const end = start + PAGE_SIZE;
+    const batch = currentFiltered.slice(start, end);
+
+    if (batch.length === 0 && reset) {
+        grid.innerHTML = '<div style="grid-column: 1/-1; text-align: center; padding: 20px;">No videos found.</div>';
+        return;
+    }
+
+    // 3. Render Batch
+    const fragment = document.createDocumentFragment();
+    batch.forEach(media => {
         const card = document.createElement('div');
         card.className = 'video-card';
 
         // Thumbnail Logic
         let thumbHtml;
         if (media.thumbnailUrl) {
-            thumbHtml = `<div class="thumb" style="background-image: url('${media.thumbnailUrl}')"></div>`;
+            thumbHtml = `<div class="thumb" loading="lazy" style="background-image: url('${media.thumbnailUrl}')"></div>`;
         } else {
             // Extract Video ID
             const parts = media.originalUrl.split('/');
-            const videoId = parts[parts.length - 1].split('?')[0] || 'Unknown'; // Handle query params
+            const videoId = parts[parts.length - 1].split('?')[0] || 'Unknown';
             const dateStr = new Date(media.scrapedAt).toLocaleDateString();
 
             thumbHtml = `
@@ -140,8 +162,40 @@ function renderVideos() {
                 </div>
             </div>
         `;
-        grid.appendChild(card);
+        fragment.appendChild(card);
     });
+
+    grid.appendChild(fragment);
+
+    // 4. Setup Infinite Scroll Observer
+    setupObserver();
+}
+
+function setupObserver() {
+    // Remove old sentinel if exists
+    const oldSentinel = document.getElementById('scroll-sentinel');
+    if (oldSentinel) oldSentinel.remove();
+
+    // If there are more items to load
+    if ((currentPage + 1) * PAGE_SIZE < currentFiltered.length) {
+        const sentinel = document.createElement('div');
+        sentinel.id = 'scroll-sentinel';
+        sentinel.style.height = '50px';
+        sentinel.style.margin = '20px 0';
+        // sentinel.textContent = 'Loading more...'; 
+        document.getElementById('video-grid').appendChild(sentinel);
+
+        if (observer) observer.disconnect();
+
+        observer = new IntersectionObserver((entries) => {
+            if (entries[0].isIntersecting) {
+                currentPage++;
+                renderVideos(false); // Load next batch (no reset)
+            }
+        }, { rootMargin: '200px' }); // Load before user hits absolute bottom
+
+        observer.observe(sentinel);
+    }
 }
 
 // Event Delegation for Video Grid
