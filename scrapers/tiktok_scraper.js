@@ -34,7 +34,7 @@ class TikTokScraper extends BaseScraper {
         // but typically we scroll first then extract, or extract incrementally.
         // For this implementation, we'll try to extract periodically to be safe against crashes.
 
-        await this.autoScroll(200, 800, async () => {
+        await this.autoScroll(200, 2000, async () => {
             // Optional: Run extraction every scroll to save progress?
             // For now, let's just scroll then extract at the end for simplicity, 
             // but the user's original script supported "EVERYLOOP".
