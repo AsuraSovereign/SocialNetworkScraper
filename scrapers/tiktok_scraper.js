@@ -52,42 +52,91 @@ class TikTokScraper extends BaseScraper {
     /**
      * Extraction Logic
      */
-    async extractAndSave() {
-        const links = Array.from(document.querySelectorAll("a"));
-        const hrefs = links.map(a => a.href);
+    /**
+     * Helper to find best thumbnail from an anchor element
+     * Adapted from user provided logic
+     */
+    getThumbnailFromAnchor(a) {
+        const picture = a.querySelector('picture');
+        const source = picture ? picture.querySelector('source') : a.querySelector('source');
+        if (!a.querySelector) return null; // Safety check
+        const img = a.querySelector('img') || (picture && picture.querySelector('img'));
 
-        // Filter for ./video/ or ./photo/
-        const mediaUrls = hrefs.filter(href => href.includes('/video/') || href.includes('/photo/'));
-        const uniqueUrls = [...new Set(mediaUrls)];
+        let rawSrc = null;
+        let srcset = null;
+
+        // Prefer <source> type attribute if present
+        if (source) {
+            rawSrc = source.getAttribute('src') || source.getAttribute('srcset') || null;
+            srcset = source.getAttribute('srcset') || null;
+        }
+
+        // Fallback to <img>
+        if (!rawSrc && img) {
+            rawSrc = img.getAttribute('src') || img.getAttribute('data-src') || img.getAttribute('data-lazy') || null;
+            srcset = img.getAttribute('srcset') || null;
+        }
+
+        if (!rawSrc && !srcset) return null;
+
+        // If srcset exists, pick the highest density candidate
+        if (srcset) {
+            try {
+                const candidates = srcset.split(',').map(s => s.trim()).map(part => {
+                    const [url, descriptor] = part.split(/\s+/);
+                    const value = descriptor ? parseFloat(descriptor) : 1;
+                    return { url, value: isNaN(value) ? 1 : value };
+                });
+                candidates.sort((a, b) => b.value - a.value);
+                return candidates[0].url;
+            } catch (e) {
+                return rawSrc;
+            }
+        }
+
+        return rawSrc;
+    }
+
+    async extractAndSave() {
+        // Get all anchors
+        const links = Array.from(document.querySelectorAll("a"));
+
+        // Map to objects first so we keep the element reference
+        const potentialItems = links.map(a => ({
+            element: a,
+            href: a.href,
+            user: this.getUsernameFromUrl(a.href)
+        })).filter(item => item.href.includes('/video/') || item.href.includes('/photo/'));
 
         // Identify Scraped User (Most frequent user in list)
-        // This logic comes from the original script to identify "Video Owner" vs "Commenters"
         const userCounts = {};
         let topUser = "UNKNOWN";
         let maxCount = 0;
 
-        uniqueUrls.forEach(url => {
-            const user = this.getUsernameFromUrl(url);
-            if (user) {
-                userCounts[user] = (userCounts[user] || 0) + 1;
-                if (userCounts[user] > maxCount) {
-                    maxCount = userCounts[user];
-                    topUser = user;
+        potentialItems.forEach(item => {
+            if (item.user) {
+                userCounts[item.user] = (userCounts[item.user] || 0) + 1;
+                if (userCounts[item.user] > maxCount) {
+                    maxCount = userCounts[item.user];
+                    topUser = item.user;
                 }
             }
         });
 
         if (topUser === "UNKNOWN") return;
 
-        // Filter URLs belonging to the Top User
-        const targetUrls = uniqueUrls.filter(url => this.getUsernameFromUrl(url) === topUser);
+        // Filter items belonging to the Top User
+        const targetItems = potentialItems.filter(item => item.user === topUser);
 
-        // Filter out already scraped items
-        const newUrls = this.filterNewItems(targetUrls);
+        // Filter out already scraped items (check ID/URL)
+        const newItems = this.filterNewItems(targetItems.map(i => i.href));
 
-        if (newUrls.length === 0) return;
+        if (newItems.length === 0) return;
 
-        console.log(`Found ${newUrls.length} new items for ${topUser}`);
+        // We need the original item objects for the new URLs to get elements
+        const itemsToSave = targetItems.filter(item => newItems.includes(item.href));
+
+        console.log(`Found ${itemsToSave.length} new items for ${topUser}`);
 
         // Save User if new
         chrome.runtime.sendMessage({
@@ -101,22 +150,26 @@ class TikTokScraper extends BaseScraper {
             }
         });
 
-        // Save Media Items
-        const mediaItems = newUrls.map(url => ({
-            id: url, // URL as ID involves risk if URL changes, but works for unique posts
-            userId: topUser,
-            platform: 'TikTok',
-            originalUrl: url,
-            scrapedAt: Date.now(),
-            downloadStatus: 'PENDING'
-        }));
+        // Save Media Items with Thumbnails
+        const mediaItems = itemsToSave.map(item => {
+            const thumbUrl = this.getThumbnailFromAnchor(item.element);
+
+            return {
+                id: item.href,
+                userId: topUser,
+                platform: 'TikTok',
+                originalUrl: item.href,
+                thumbnailUrl: thumbUrl,
+                scrapedAt: Date.now(),
+                downloadStatus: 'PENDING'
+            };
+        });
 
         chrome.runtime.sendMessage({
             action: 'SAVE_BATCH',
             store: 'media',
             data: mediaItems
         });
-
         // Notify Background to Download? 
         // User asked to "export urls" and "download videos".
         // We can trigger downloads here or let the user do it from Dashboard.
