@@ -112,9 +112,23 @@ function renderVideos() {
         card.className = 'video-card';
 
         // Thumbnail Logic
-        const thumbHtml = media.thumbnailUrl
-            ? `<div class="thumb" style="background-image: url('${media.thumbnailUrl}')"></div>`
-            : `<div class="thumb placeholder"><span>No Preview</span></div>`;
+        // Thumbnail Logic
+        let thumbHtml;
+        if (media.thumbnailUrl) {
+            thumbHtml = `<div class="thumb" style="background-image: url('${media.thumbnailUrl}')"></div>`;
+        } else {
+            // Extract Video ID
+            const parts = media.originalUrl.split('/');
+            const videoId = parts[parts.length - 1].split('?')[0] || 'Unknown'; // Handle query params
+            const dateStr = new Date(media.scrapedAt).toLocaleDateString();
+            
+            thumbHtml = `
+                <div class="thumb placeholder" style="flex-direction: column; padding: 10px; text-align: center;">
+                    <span style="font-size: 0.8rem; color: #888; margin-bottom: 5px;">ID: ${videoId}</span>
+                    <span style="font-size: 0.7rem; color: #555;">Scraped: ${dateStr}</span>
+                </div>
+            `;
+        }
 
         card.innerHTML = `
             ${thumbHtml}
