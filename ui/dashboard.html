@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Scraper Dashboard</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+
+<body>
+    <div class="container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <h2>Antigravity Scraper</h2>
+            <nav>
+                <ul>
+                    <li id="link-stats" class="active">General Stats</li>
+                    <li id="link-videos">See All Videos</li>
+                    <li id="link-export">Export Data</li>
+                </ul>
+            </nav>
+        </aside>
+
+        <!-- Main Content -->
+        <main id="content-area">
+
+            <!-- STATS TAB -->
+            <div id="tab-stats" class="tab-content">
+                <h1>Overview</h1>
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <h3>Total Videos</h3>
+                        <p id="stat-total-videos">0</p>
+                    </div>
+                    <div class="stat-card">
+                        <h3>Unique Users</h3>
+                        <p id="stat-total-users">0</p>
+                    </div>
+                    <div class="stat-card">
+                        <h3>Last Active</h3>
+                        <p id="stat-last-active">-</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- VIDEOS TAB -->
+            <div id="tab-videos" class="tab-content" style="display:none;">
+                <div class="header-row">
+                    <h1>All Videos</h1>
+                    <div class="filters">
+                        <select id="filter-platform" class="filter-select">
+                            <option value="ALL">All Platforms</option>
+                            <option value="TikTok">TikTok</option>
+                            <option value="Facebook">Facebook</option>
+                            <option value="Instagram">Instagram</option>
+                        </select>
+                        <select id="filter-user" class="filter-select">
+                            <option value="ALL">All Users</option>
+                            <!-- Users injected by JS -->
+                        </select>
+                    </div>
+                </div>
+                <div id="video-grid" class="video-grid">
+                    <!-- Cards injected here -->
+                </div>
+            </div>
+
+            <!-- EXPORT TAB -->
+            <div id="tab-export" class="tab-content" style="display:none;">
+                <h1>Export Data</h1>
+                <p>Select format to download all scraped data.</p>
+                <div class="button-group">
+                    <button id="btn-export-txt" class="btn primary">Export to TXT</button>
+                    <button id="btn-export-csv" class="btn secondary">Export to CSV</button>
+                </div>
+            </div>
+
+        </main>
+    </div>
+    <script src="../utils/storage.js"></script>
+    <script type="module" src="dashboard.js"></script>
+</body>
+
+</html>
