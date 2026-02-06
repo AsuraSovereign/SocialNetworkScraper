@@ -136,7 +136,7 @@ function renderVideos() {
                 <p>${new Date(media.scrapedAt).toLocaleDateString()}</p>
                 <div class="actions">
                     <a href="${media.originalUrl}" target="_blank">View</a>
-                    <button onclick="downloadVideo('${media.originalUrl}')">Download</button>
+                    <button class="btn-download" data-url="${media.originalUrl}">Download</button>
                 </div>
             </div>
         `;
@@ -144,10 +144,15 @@ function renderVideos() {
     });
 }
 
-// Make globally available for button onclick
-window.downloadVideo = (url) => {
-    chrome.runtime.sendMessage({ action: 'DOWNLOAD_MEDIA', payload: { url: url } });
-};
+// Event Delegation for Video Grid
+document.getElementById('video-grid').addEventListener('click', (e) => {
+    if (e.target.classList.contains('btn-download')) {
+        const url = e.target.getAttribute('data-url');
+        if (url) {
+            chrome.runtime.sendMessage({ action: 'DOWNLOAD_MEDIA', payload: { url: url } });
+        }
+    }
+});
 
 // --- EXPORT ---
 document.getElementById('btn-export-txt').addEventListener('click', () => {
