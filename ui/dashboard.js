@@ -80,14 +80,20 @@ function renderStats() {
 
     // Populate User Filter
     const userList = [...new Set(allMedia.map(m => m.userId))];
-    // Keep "All Users" option
-    filterUser.innerHTML = '<option value="ALL">All Users</option>';
-    userList.forEach(u => {
-        const opt = document.createElement('option');
-        opt.value = u;
-        opt.textContent = u;
-        filterUser.appendChild(opt);
-    });
+
+    // Helper to populate select
+    const populate = (select) => {
+        select.innerHTML = '<option value="ALL">All Users</option>';
+        userList.forEach(u => {
+            const opt = document.createElement('option');
+            opt.value = u;
+            opt.textContent = u;
+            select.appendChild(opt);
+        });
+    };
+
+    populate(filterUser);
+    populate(document.getElementById('export-user'));
 }
 
 // --- VIDEOS GRID ---
@@ -209,15 +215,142 @@ document.getElementById('video-grid').addEventListener('click', (e) => {
 });
 
 // --- EXPORT ---
-document.getElementById('btn-export-txt').addEventListener('click', () => {
-    const text = allMedia.map(m => m.originalUrl).join('\n');
-    downloadFile(text, 'export.txt', 'text/plain');
+// --- EXPORT ---
+const exportPlatform = document.getElementById('export-platform');
+const exportUser = document.getElementById('export-user');
+const exportNewOnly = document.getElementById('export-new-only');
+
+function getExportData() {
+    const pFilter = exportPlatform.value;
+    const uFilter = exportUser.value;
+    const newOnly = exportNewOnly.checked;
+
+    return allMedia.filter(m => {
+        if (pFilter !== 'ALL' && m.platform !== pFilter) return false;
+        if (uFilter !== 'ALL' && m.userId !== uFilter) return false;
+        if (newOnly && m.exported) return false;
+        return true;
+    });
+}
+
+
+
+function getSelectedColumns() {
+    // Updated selector for new pill structure
+    const checkboxes = document.querySelectorAll('#column-pills input:checked');
+    return Array.from(checkboxes).map(cb => cb.value);
+}
+
+// --- LIVE PREVIEW ---
+function updateLivePreview() {
+    const data = getExportData().slice(0, 3); // Top 3
+    const columns = getSelectedColumns();
+    const table = document.getElementById('preview-table');
+    const thead = table.querySelector('thead');
+    const tbody = table.querySelector('tbody');
+
+    // Headers
+    thead.innerHTML = '<tr>' + columns.map(col => `<th>${formatColumnName(col)}</th>`).join('') + '</tr>';
+
+    // Rows
+    tbody.innerHTML = '';
+    if (data.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="${columns.length}" style="text-align:center; color:#888;">No data matches filter</td></tr>`;
+        return;
+    }
+
+    data.forEach(item => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = columns.map(col => {
+            let val = item[col] || '';
+            if (col === 'scrapedAt') val = new Date(val).toLocaleString();
+            return `<td title="${val}">${val}</td>`;
+        }).join('');
+        tbody.appendChild(tr);
+    });
+}
+
+function formatColumnName(col) {
+    const map = {
+        'originalUrl': 'Video URL',
+        'scrapedAt': 'Date Scraped',
+        'userId': 'Username',
+        'platform': 'Platform',
+        'videoId': 'Video ID',
+        'thumbnailUrl': 'Thumbnail URL'
+    };
+    return map[col] || col;
+}
+
+// Event Listeners for Preview
+[exportPlatform, exportUser, exportNewOnly].forEach(el => {
+    el.addEventListener('change', updateLivePreview);
 });
 
-document.getElementById('btn-export-csv').addEventListener('click', () => {
-    const header = "User,URL,Date,Platform\n";
-    const rows = allMedia.map(m => `${m.userId},${m.originalUrl},${new Date(m.scrapedAt).toISOString()},${m.platform}`).join('\n');
-    downloadFile(header + rows, 'export.csv', 'text/csv');
+document.querySelectorAll('#column-pills input').forEach(cb => {
+    cb.addEventListener('change', updateLivePreview);
+});
+
+// Initial Preview Load
+// We need to wait for data load
+const originalLoadData = loadData;
+loadData = async function () {
+    await originalLoadData(); // Call original
+    updateLivePreview(); // Then update preview
+};
+
+async function markItemsAsExported(items) {
+    if (!items || items.length === 0) return;
+
+    // Update in memory
+    items.forEach(m => m.exported = true);
+
+    // Update in DB (Batch update would be better but simple loop for now)
+    // We can use SAVE_BATCH action just like scraper
+    chrome.runtime.sendMessage({
+        action: 'SAVE_BATCH',
+        store: 'media',
+        data: items
+    });
+
+    // Refresh preview to reflect "New Only" filter if active
+    if (exportNewOnly.checked) updateLivePreview();
+}
+
+document.getElementById('btn-export-txt').addEventListener('click', async () => {
+    const data = getExportData();
+    if (data.length === 0) { alert('No data matches your filters.'); return; }
+
+    const text = data.map(m => m.originalUrl).join('\n');
+    downloadFile(text, 'export_urls.txt', 'text/plain');
+
+    await markItemsAsExported(data);
+});
+
+document.getElementById('btn-export-csv').addEventListener('click', async () => {
+    const data = getExportData();
+    if (data.length === 0) { alert('No data matches your filters.'); return; }
+
+    const columns = getSelectedColumns();
+    if (columns.length === 0) { alert('Please select at least one column.'); return; }
+
+    // Header
+    const header = columns.map(c => formatColumnName(c)).join(',') + '\n';
+
+    // Rows
+    const rows = data.map(m => {
+        return columns.map(col => {
+            let val = m[col] || '';
+            if (col === 'scrapedAt') val = new Date(val).toISOString();
+            // Escape CSV injection/commas
+            const str = String(val).replace(/"/g, '""');
+            return `"${str}"`;
+        }).join(',');
+    }).join('\n');
+
+    downloadFile(header + rows, 'export_data.csv', 'text/csv');
+
+    await markItemsAsExported(data);
 });
 
 function downloadFile(content, filename, type) {
