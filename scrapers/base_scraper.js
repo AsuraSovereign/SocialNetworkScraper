@@ -141,17 +141,20 @@ class BaseScraper {
     }
 
     /**
-     * Toggles a privacy overlay to obscure page content
-     * @param {boolean} enable 
+     * Sets the privacy overlay based on mode
+     * @param {string} mode - 'HIDDEN_UNTIL_DONE', 'ALWAYS_HIDDEN', 'OFF'
      */
-    togglePrivacyOverlay(enable) {
+    setPrivacyOverlay(mode) {
         const id = 'social-scraper-privacy-overlay';
-        const existing = document.getElementById(id);
+        let overlay = document.getElementById(id);
 
-        if (enable) {
-            if (existing) return;
+        if (mode === 'OFF') {
+            if (overlay) overlay.remove();
+            return;
+        }
 
-            const overlay = document.createElement('div');
+        if (!overlay) {
+            overlay = document.createElement('div');
             overlay.id = id;
             Object.assign(overlay.style, {
                 position: 'fixed',
@@ -159,26 +162,103 @@ class BaseScraper {
                 left: '0',
                 width: '100vw',
                 height: '100vh',
-                backgroundColor: '#000000',
-                zIndex: '999990', // Just below notifications (999999)
+                zIndex: '999990',
                 display: 'flex',
                 flexDirection: 'column',
                 alignItems: 'center',
                 justifyContent: 'center',
                 color: '#ffffff',
                 fontFamily: 'system-ui, sans-serif',
-                pointerEvents: 'none' // Allow scrolling/clicks to pass through if needed, though mostly we want to block view
+                transition: 'background-color 0.3s'
             });
 
-            overlay.innerHTML = `
-                <div style="font-size: 24px; margin-bottom: 16px;">🔒 Privacy Mode Active</div>
-                <div style="font-size: 14px; color: #888;">Scraping in progress...</div>
-                <div style="font-size: 12px; color: #666; margin-top: 20px;">The screen is hidden for privacy.</div>
+            // Inner container for content
+            const content = document.createElement('div');
+            Object.assign(content.style, {
+                backgroundColor: 'rgba(0,0,0,0.85)',
+                padding: '40px',
+                borderRadius: '16px',
+                textAlign: 'center',
+                backdropFilter: 'blur(10px)',
+                border: '1px solid rgba(255,255,255,0.1)'
+            });
+
+            content.innerHTML = `
+                <div style="font-size: 32px; margin-bottom: 16px;">🔒</div>
+                <div style="font-size: 24px; font-weight: bold; margin-bottom: 8px;">Privacy Mode Active</div>
+                <div style="font-size: 14px; color: #ccc; margin-bottom: 24px;">Content is hidden while scraping</div>
+                
+                <div style="display: flex; gap: 12px; justify-content: center; align-items: center;">
+                    <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; background: rgba(255,255,255,0.1); padding: 8px 16px; borderRadius: 8px; user-select: none;">
+                        <input type="checkbox" id="privacy-peek-toggle" style="width: 16px; height: 16px; cursor: pointer;">
+                        <span>Show Content (Peek)</span>
+                    </label>
+                </div>
+
+                <button id="privacy-dismiss-btn" style="
+                    display: none; 
+                    margin-top: 24px; 
+                    background: #fff; 
+                    color: #000; 
+                    border: none; 
+                    padding: 10px 24px; 
+                    border-radius: 8px; 
+                    font-weight: bold; 
+                    cursor: pointer;
+                    transition: transform 0.1s;
+                ">Dismiss Overlay</button>
             `;
 
+            overlay.appendChild(content);
+
+            // Background masker
+            const masker = document.createElement('div');
+            masker.id = 'privacy-masker';
+            Object.assign(masker.style, {
+                position: 'absolute',
+                top: '0',
+                left: '0',
+                width: '100%',
+                height: '100%',
+                backgroundColor: '#000',
+                zIndex: '-1'
+            });
+            overlay.appendChild(masker);
+
             document.body.appendChild(overlay);
-        } else {
-            if (existing) existing.remove();
+
+            // Event Listeners
+            const peekToggle = overlay.querySelector('#privacy-peek-toggle');
+            peekToggle.addEventListener('change', (e) => {
+                if (e.target.checked) {
+                    masker.style.opacity = '0';
+                    overlay.style.pointerEvents = 'none'; // Click-through when peeking
+                    content.style.pointerEvents = 'auto'; // Keep controls interactive
+                    content.style.opacity = '0.7';
+                } else {
+                    masker.style.opacity = '1';
+                    overlay.style.pointerEvents = 'auto';
+                    content.style.opacity = '1';
+                }
+            });
+
+            const dismissBtn = overlay.querySelector('#privacy-dismiss-btn');
+            dismissBtn.addEventListener('click', () => {
+                overlay.remove();
+            });
+        }
+    }
+
+    /**
+     * Updates the overlay state (e.g. show dismiss button)
+     */
+    updatePrivacyOverlayState(state) {
+        const dismissBtn = document.getElementById('privacy-dismiss-btn');
+        if (dismissBtn) {
+            if (state === 'DONE') {
+                dismissBtn.textContent = 'Scraping Complete - Dismiss';
+                dismissBtn.style.display = 'block';
+            }
         }
     }
 }

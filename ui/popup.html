@@ -74,9 +74,15 @@
 
 <body>
     <h1>Social Scraper</h1>
-    <div style="margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">
-        <input type="checkbox" id="privacyMode" />
-        <label for="privacyMode" style="cursor: pointer; font-size: 14px;">Enable Privacy Mode</label>
+    <div style="margin-bottom: 12px;">
+        <label for="privacyMode" style="display:block; margin-bottom: 4px; font-size: 14px; color: #ccc;">Privacy
+            Mode</label>
+        <select id="privacyMode"
+            style="width: 100%; padding: 8px; border-radius: 4px; background: #333; color: #fff; border: 1px solid #555;">
+            <option value="HIDDEN_UNTIL_DONE">Hide until finished</option>
+            <option value="ALWAYS_HIDDEN">Always Hide</option>
+            <option value="OFF">Off</option>
+        </select>
     </div>
     <div id="actions">
         <!-- Buttons injected by JS -->

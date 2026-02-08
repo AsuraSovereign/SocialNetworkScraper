@@ -19,17 +19,34 @@ async function init() {
 
     if (!tab.url) return;
 
+    const privacySelect = document.getElementById('privacyMode');
+
+    // Load saved setting
+    chrome.storage.local.get(['privacySetting'], (result) => {
+        if (result.privacySetting) {
+            privacySelect.value = result.privacySetting;
+        } else {
+            // Default
+            privacySelect.value = 'HIDDEN_UNTIL_DONE';
+        }
+    });
+
+    // Save on change
+    privacySelect.addEventListener('change', () => {
+        chrome.storage.local.set({ privacySetting: privacySelect.value });
+    });
+
     if (tab.url.includes('tiktok.com')) {
         body.classList.add('tiktok-theme');
         const scrapeBtn = document.createElement('button');
         scrapeBtn.className = 'btn btn-primary';
         scrapeBtn.textContent = 'Start TikTok Scrape';
         scrapeBtn.onclick = async () => {
-            const privacyMode = document.getElementById('privacyMode').checked;
+            const privacySetting = privacySelect.value;
             statusDiv.textContent = 'Initializing...';
 
             // Try sending message first
-            chrome.tabs.sendMessage(tab.id, { action: 'START_SCRAPE_TIKTOK', privacyMode }, (response) => {
+            chrome.tabs.sendMessage(tab.id, { action: 'START_SCRAPE_TIKTOK', privacySetting }, (response) => {
                 if (chrome.runtime.lastError) {
                     // Content script likely not loaded. 
                     // Dynamic injection of modules is flaky; asking user to reload is robust.

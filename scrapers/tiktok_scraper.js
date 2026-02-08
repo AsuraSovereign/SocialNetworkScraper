@@ -1,7 +1,7 @@
 class TikTokScraper extends BaseScraper {
-    constructor(privacyMode = false) {
+    constructor(privacySetting = 'HIDDEN_UNTIL_DONE') {
         super('TikTok');
-        this.privacyMode = privacyMode;
+        this.privacySetting = privacySetting;
     }
 
     /**
@@ -29,9 +29,7 @@ class TikTokScraper extends BaseScraper {
         if (this.isScraping) return;
         this.isScraping = true;
 
-        if (this.privacyMode) {
-            this.togglePrivacyOverlay(true);
-        }
+        this.setPrivacyOverlay(this.privacySetting);
 
         this.showNotification("Starting TikTok Scrape...", "info");
         console.log("Starting TikTok Scrape...");
@@ -58,9 +56,13 @@ class TikTokScraper extends BaseScraper {
             this.showNotification("Scrape error occurred", "error");
         } finally {
             this.stop();
-            if (this.privacyMode) {
-                this.togglePrivacyOverlay(false);
+
+            if (this.privacySetting === 'HIDDEN_UNTIL_DONE') {
+                this.setPrivacyOverlay('OFF');
+            } else if (this.privacySetting === 'ALWAYS_HIDDEN') {
+                this.updatePrivacyOverlayState('DONE');
             }
+
             this.showNotification("TikTok Scrape Complete!", "success");
             console.log("TikTok Scrape Complete.");
         }
@@ -202,7 +204,9 @@ class TikTokScraper extends BaseScraper {
 // Typically we wait for a message.
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === "START_SCRAPE_TIKTOK") {
-        const scraper = new TikTokScraper(request.privacyMode);
+        console.log("Received START_SCRAPE_TIKTOK", request);
+        const scraper = new TikTokScraper(request.privacySetting);
+        console.log("Created Scraper with privacySetting:", scraper.privacySetting);
         scraper.scrape().then(() => sendResponse({ status: 'done' }));
         return true; // async response
     }
