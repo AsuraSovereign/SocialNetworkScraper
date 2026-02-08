@@ -317,12 +317,22 @@ async function markItemsAsExported(items) {
     if (exportNewOnly.checked) updateLivePreview();
 }
 
+// Helper for descriptive filenames
+function generateExportFilename(extension) {
+    const platform = exportPlatform.value === 'ALL' ? 'AllPlatforms' : exportPlatform.value;
+    const user = exportUser.value === 'ALL' ? 'AllUsers' : exportUser.value;
+    const date = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+    const type = extension === 'txt' ? 'URLs' : 'Data';
+    return `SocialScraper_${platform}_${user}_${type}_${date}.${extension}`;
+}
+
 document.getElementById('btn-export-txt').addEventListener('click', async () => {
     const data = getExportData();
     if (data.length === 0) { alert('No data matches your filters.'); return; }
 
     const text = data.map(m => m.originalUrl).join('\n');
-    downloadFile(text, 'export_urls.txt', 'text/plain');
+    const filename = generateExportFilename('txt');
+    downloadFile(text, filename, 'text/plain');
 
     await markItemsAsExported(data);
 });
@@ -348,7 +358,8 @@ document.getElementById('btn-export-csv').addEventListener('click', async () => 
         }).join(',');
     }).join('\n');
 
-    downloadFile(header + rows, 'export_data.csv', 'text/csv');
+    const filename = generateExportFilename('csv');
+    downloadFile(header + rows, filename, 'text/csv');
 
     await markItemsAsExported(data);
 });
