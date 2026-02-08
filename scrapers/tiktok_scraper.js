@@ -1,6 +1,7 @@
 class TikTokScraper extends BaseScraper {
-    constructor() {
+    constructor(privacyMode = false) {
         super('TikTok');
+        this.privacyMode = privacyMode;
     }
 
     /**
@@ -27,28 +28,42 @@ class TikTokScraper extends BaseScraper {
     async scrape() {
         if (this.isScraping) return;
         this.isScraping = true;
+
+        if (this.privacyMode) {
+            this.togglePrivacyOverlay(true);
+        }
+
         this.showNotification("Starting TikTok Scrape...", "info");
         console.log("Starting TikTok Scrape...");
 
-        // 1. Auto-scroll to load content
-        // We pass a callback to extraction logic to run periodically if we wanted "EVERYLOOP" mode,
-        // but typically we scroll first then extract, or extract incrementally.
-        // For this implementation, we'll try to extract periodically to be safe against crashes.
+        try {
+            // 1. Auto-scroll to load content
+            // We pass a callback to extraction logic to run periodically if we wanted "EVERYLOOP" mode,
+            // but typically we scroll first then extract, or extract incrementally.
+            // For this implementation, we'll try to extract periodically to be safe against crashes.
 
-        await this.autoScroll(200, 2000, async () => {
-            // Optional: Run extraction every scroll to save progress?
-            // For now, let's just scroll then extract at the end for simplicity, 
-            // but the user's original script supported "EVERYLOOP".
-            // Let's implement incremental saving.
+            await this.autoScroll(200, 2000, async () => {
+                // Optional: Run extraction every scroll to save progress?
+                // For now, let's just scroll then extract at the end for simplicity, 
+                // but the user's original script supported "EVERYLOOP".
+                // Let's implement incremental saving.
+                await this.extractAndSave();
+                return false; // Don't stop scrolling yet
+            });
+
+            // Final pass
             await this.extractAndSave();
-            return false; // Don't stop scrolling yet
-        });
-
-        // Final pass
-        await this.extractAndSave();
-        this.stop();
-        this.showNotification("TikTok Scrape Complete!", "success");
-        console.log("TikTok Scrape Complete.");
+        } catch (err) {
+            console.error("Scrape error:", err);
+            this.showNotification("Scrape error occurred", "error");
+        } finally {
+            this.stop();
+            if (this.privacyMode) {
+                this.togglePrivacyOverlay(false);
+            }
+            this.showNotification("TikTok Scrape Complete!", "success");
+            console.log("TikTok Scrape Complete.");
+        }
     }
 
     /**
@@ -187,7 +202,7 @@ class TikTokScraper extends BaseScraper {
 // Typically we wait for a message.
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === "START_SCRAPE_TIKTOK") {
-        const scraper = new TikTokScraper();
+        const scraper = new TikTokScraper(request.privacyMode);
         scraper.scrape().then(() => sendResponse({ status: 'done' }));
         return true; // async response
     }

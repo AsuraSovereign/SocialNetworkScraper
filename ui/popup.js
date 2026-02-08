@@ -25,10 +25,11 @@ async function init() {
         scrapeBtn.className = 'btn btn-primary';
         scrapeBtn.textContent = 'Start TikTok Scrape';
         scrapeBtn.onclick = async () => {
+            const privacyMode = document.getElementById('privacyMode').checked;
             statusDiv.textContent = 'Initializing...';
 
             // Try sending message first
-            chrome.tabs.sendMessage(tab.id, { action: 'START_SCRAPE_TIKTOK' }, (response) => {
+            chrome.tabs.sendMessage(tab.id, { action: 'START_SCRAPE_TIKTOK', privacyMode }, (response) => {
                 if (chrome.runtime.lastError) {
                     // Content script likely not loaded. 
                     // Dynamic injection of modules is flaky; asking user to reload is robust.

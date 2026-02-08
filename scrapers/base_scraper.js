@@ -139,4 +139,46 @@ class BaseScraper {
             setTimeout(() => notification.remove(), 300);
         }, 4000);
     }
+
+    /**
+     * Toggles a privacy overlay to obscure page content
+     * @param {boolean} enable 
+     */
+    togglePrivacyOverlay(enable) {
+        const id = 'social-scraper-privacy-overlay';
+        const existing = document.getElementById(id);
+
+        if (enable) {
+            if (existing) return;
+
+            const overlay = document.createElement('div');
+            overlay.id = id;
+            Object.assign(overlay.style, {
+                position: 'fixed',
+                top: '0',
+                left: '0',
+                width: '100vw',
+                height: '100vh',
+                backgroundColor: '#000000',
+                zIndex: '999990', // Just below notifications (999999)
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: '#ffffff',
+                fontFamily: 'system-ui, sans-serif',
+                pointerEvents: 'none' // Allow scrolling/clicks to pass through if needed, though mostly we want to block view
+            });
+
+            overlay.innerHTML = `
+                <div style="font-size: 24px; margin-bottom: 16px;">🔒 Privacy Mode Active</div>
+                <div style="font-size: 14px; color: #888;">Scraping in progress...</div>
+                <div style="font-size: 12px; color: #666; margin-top: 20px;">The screen is hidden for privacy.</div>
+            `;
+
+            document.body.appendChild(overlay);
+        } else {
+            if (existing) existing.remove();
+        }
+    }
 }
