@@ -27,6 +27,7 @@ class TikTokScraper extends BaseScraper {
     async scrape() {
         if (this.isScraping) return;
         this.isScraping = true;
+        this.showNotification("Starting TikTok Scrape...", "info");
         console.log("Starting TikTok Scrape...");
 
         // 1. Auto-scroll to load content
@@ -46,6 +47,7 @@ class TikTokScraper extends BaseScraper {
         // Final pass
         await this.extractAndSave();
         this.stop();
+        this.showNotification("TikTok Scrape Complete!", "success");
         console.log("TikTok Scrape Complete.");
     }
 
@@ -136,7 +138,9 @@ class TikTokScraper extends BaseScraper {
         // We need the original item objects for the new URLs to get elements
         const itemsToSave = targetItems.filter(item => newItems.includes(item.href));
 
-        console.log(`Found ${itemsToSave.length} new items for ${topUser}`);
+        const msg = `Found ${itemsToSave.length} new items for ${topUser}`;
+        console.log(msg);
+        this.showNotification(msg, "success");
 
         // Save User if new
         chrome.runtime.sendMessage({
