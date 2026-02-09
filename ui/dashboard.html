@@ -17,6 +17,8 @@
                     <li id="link-stats" class="active">General Stats</li>
                     <li id="link-videos">See All Videos</li>
                     <li id="link-export">Export Data</li>
+                    <li id="link-delete" style="color: #ff0050; border: 1px solid #ff0050; margin-top: 20px;">Delete
+                        Data</li>
                 </ul>
             </nav>
         </aside>
@@ -163,6 +165,80 @@
                                 </thead>
                                 <tbody>
                                     <!-- Rows (Dynamic) -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- DELETE TAB -->
+            <div id="tab-delete" class="tab-content" style="display:none;">
+                <div class="header-section">
+                    <h1 style="color: #ff0050;">Delete Data</h1>
+                    <p>Permanently remove data from the database. <strong>A snapshot will be created before
+                            deletion.</strong></p>
+                </div>
+
+                <div class="export-grid">
+                    <!-- Card 1: Filters (Reused) -->
+                    <div class="modern-card">
+                        <div class="card-header">
+                            <h3>Select Data to Delete</h3>
+                        </div>
+                        <div class="card-body">
+                            <div class="filter-flex">
+                                <div class="filter-group">
+                                    <label>Platform</label>
+                                    <select id="delete-platform" class="modern-select">
+                                        <option value="ALL">All Platforms</option>
+                                        <option value="TikTok">TikTok</option>
+                                        <option value="Facebook">Facebook</option>
+                                        <option value="Instagram">Instagram</option>
+                                    </select>
+                                </div>
+                                <div class="filter-group">
+                                    <label>User</label>
+                                    <select id="delete-user" class="modern-select">
+                                        <option value="ALL">All Users</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Card 2: Danger Zone -->
+                    <div class="modern-card" style="border: 1px solid #ff0050;">
+                        <div class="card-header" style="background-color: rgba(255, 0, 80, 0.1);">
+                            <h3 style="color: #ff0050;">Danger Zone</h3>
+                        </div>
+                        <div class="card-body" style="text-align: center;">
+                            <h2 id="delete-count" style="font-size: 3rem; margin: 0 0 10px 0;">0</h2>
+                            <p style="margin-bottom: 24px; color: #ccc;">Items to be deleted</p>
+
+                            <button id="btn-delete-confirm" class="btn"
+                                style="background-color: #ff0050; color: #fff; padding: 16px 32px; font-size: 1.1rem; width: 100%; max-width: 400px;">
+                                🗑️ Create Snapshot & Delete
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Card 3: Preview (Reused) -->
+                    <div class="modern-card">
+                        <div class="card-header">
+                            <h3>Preview Selection</h3>
+                        </div>
+                        <div class="card-body table-wrapper">
+                            <table id="delete-preview-table" class="modern-table">
+                                <thead>
+                                    <tr>
+                                        <th>Video URL</th>
+                                        <th>Date Scraped</th>
+                                        <th>Username</th>
+                                        <th>Platform</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
                                 </tbody>
                             </table>
                         </div>

@@ -3,10 +3,12 @@ const contentArea = document.getElementById('content-area');
 const statsTab = document.getElementById('tab-stats');
 const videosTab = document.getElementById('tab-videos');
 const exportTab = document.getElementById('tab-export');
+const deleteTab = document.getElementById('tab-delete');
 
 const linkStats = document.getElementById('link-stats');
 const linkVideos = document.getElementById('link-videos');
 const linkExport = document.getElementById('link-export');
+const linkDelete = document.getElementById('link-delete');
 
 // Filters
 const filterPlatform = document.getElementById('filter-platform');
@@ -31,6 +33,7 @@ function setupNavigation() {
     linkStats.addEventListener('click', () => showTab('stats'));
     linkVideos.addEventListener('click', () => showTab('videos'));
     linkExport.addEventListener('click', () => showTab('export'));
+    linkDelete.addEventListener('click', () => showTab('delete'));
 }
 
 function showTab(tabName) {
@@ -38,11 +41,13 @@ function showTab(tabName) {
     statsTab.style.display = 'none';
     videosTab.style.display = 'none';
     exportTab.style.display = 'none';
+    deleteTab.style.display = 'none';
 
     // Deactivate links
     linkStats.classList.remove('active');
     linkVideos.classList.remove('active');
     linkExport.classList.remove('active');
+    // linkDelete.classList.remove('active'); // Style is inline, so we just leave it
 
     // Show active
     if (tabName === 'stats') {
@@ -56,6 +61,9 @@ function showTab(tabName) {
     } else if (tabName === 'export') {
         exportTab.style.display = 'block';
         linkExport.classList.add('active');
+    } else if (tabName === 'delete') {
+        deleteTab.style.display = 'block';
+        updateDeletePreview();
     }
 }
 
@@ -376,3 +384,124 @@ function downloadFile(content, filename, type) {
 }
 
 init();
+
+// --- DELETE DATA TAB ---
+const deletePlatform = document.getElementById('delete-platform');
+const deleteUser = document.getElementById('delete-user');
+const deleteCountParams = document.getElementById('delete-count');
+
+function getDeleteFilterData() {
+    const pFilter = deletePlatform.value;
+    const uFilter = deleteUser.value;
+
+    return allMedia.filter(m => {
+        if (pFilter !== 'ALL' && m.platform !== pFilter) return false;
+        if (uFilter !== 'ALL' && m.userId !== uFilter) return false;
+        return true;
+    });
+}
+
+function updateDeletePreview() {
+    const data = getDeleteFilterData();
+    const columns = ['originalUrl', 'scrapedAt', 'userId', 'platform']; // Fixed columns for delete preview
+    const table = document.getElementById('delete-preview-table');
+    const tbody = table.querySelector('tbody');
+
+    // Update Count
+    deleteCountParams.textContent = data.length;
+
+    // Rows (Limit to 10 for performance in preview)
+    const previewData = data.slice(0, 10);
+
+    tbody.innerHTML = '';
+    if (previewData.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="${columns.length}" style="text-align:center; color:#888;">No data matches filter</td></tr>`;
+        return;
+    }
+
+    previewData.forEach(item => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = columns.map(col => {
+            let val = item[col] || '';
+            if (col === 'scrapedAt') val = new Date(val).toLocaleString();
+            return `<td title="${val}">${val}</td>`;
+        }).join('');
+        tbody.appendChild(tr);
+    });
+
+    if (data.length > 10) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td colspan="${columns.length}" style="text-align:center; color:#888;">...and ${data.length - 10} more items</td>`;
+        tbody.appendChild(tr);
+    }
+}
+
+// Wire up filters
+[deletePlatform, deleteUser].forEach(el => {
+    el.addEventListener('change', updateDeletePreview);
+});
+
+// Populate Delete User Select (when Stats loaded)
+// Modified renderStats to populate delete-user as well (already handled by populate call? check init)
+// Ah, renderStats populated 'export-user', we need to populate 'delete-user' too.
+// We'll hook into renderStats by monkey patching or just adding a listener if possible, 
+// but since renderStats is global scope here, let's just modify the existing populate logic 
+// or overwrite it securely.
+const originalRenderStats = renderStats;
+renderStats = function () {
+    originalRenderStats();
+    // Populate delete user select
+    const userList = [...new Set(allMedia.map(m => m.userId))];
+    const select = document.getElementById('delete-user');
+    const currentValue = select.value;
+
+    select.innerHTML = '<option value="ALL">All Users</option>';
+    userList.forEach(u => {
+        const opt = document.createElement('option');
+        opt.value = u;
+        opt.textContent = u;
+        select.appendChild(opt);
+    });
+    // Restore selection if valid
+    if (userList.includes(currentValue) || currentValue === 'ALL') {
+        select.value = currentValue;
+    }
+}
+
+
+// Delete Action
+document.getElementById('btn-delete-confirm').addEventListener('click', async () => {
+    const data = getDeleteFilterData();
+    if (data.length === 0) {
+        alert('No data to delete.');
+        return;
+    }
+
+    // 1. Snapshot Download
+    const filename = `SNAPSHOT_BEFORE_DELETE_${new Date().toISOString().split('T')[0]}.json`;
+    const jsonContent = JSON.stringify(data, null, 2);
+    downloadFile(jsonContent, filename, 'application/json');
+
+    // 2. Confirmation
+    // Allow small delay for download to start
+    setTimeout(async () => {
+        const confirmed = confirm(`WARNING: You are about to PERMANENTLY delete ${data.length} items.\n\nA snapshot has been downloaded.\n\nAre you sure you want to proceed?`);
+
+        if (confirmed) {
+            try {
+                const keys = data.map(m => m.id);
+                await window.socialDB.deleteBatch('media', keys);
+
+                alert('Deletion successful.');
+
+                // Reload
+                await loadData();
+                updateDeletePreview();
+                // Stay on tab
+            } catch (err) {
+                console.error(err);
+                alert('Error deleting data: ' + err.message);
+            }
+        }
+    }, 500);
+});

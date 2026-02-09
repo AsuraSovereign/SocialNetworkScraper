@@ -93,6 +93,36 @@ class StorageUtils {
             request.onerror = () => reject(request.error);
         });
     }
+    /**
+     * Delete a single item
+     */
+    async delete(storeName, key) {
+        await this.init();
+        return new Promise((resolve, reject) => {
+            const transaction = this.db.transaction([storeName], 'readwrite');
+            const store = transaction.objectStore(storeName);
+            const request = store.delete(key);
+
+            request.onsuccess = () => resolve();
+            request.onerror = () => reject(request.error);
+        });
+    }
+
+    /**
+     * Delete multiple items
+     */
+    async deleteBatch(storeName, keys) {
+        await this.init();
+        return new Promise((resolve, reject) => {
+            const transaction = this.db.transaction([storeName], 'readwrite');
+            const store = transaction.objectStore(storeName);
+
+            transaction.oncomplete = () => resolve();
+            transaction.onerror = () => reject(transaction.error);
+
+            keys.forEach(key => store.delete(key));
+        });
+    }
 }
 
 // Global instance for Contexts (Window or Service Worker)
