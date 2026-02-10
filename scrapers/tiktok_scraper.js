@@ -49,8 +49,8 @@ class TikTokScraper extends BaseScraper {
                 return false; // Don't stop scrolling yet
             });
 
-            // Final pass
-            await this.extractAndSave();
+            // Final pass - Force update of any data URIs
+            await this.extractAndSave(true);
         } catch (err) {
             console.error("Scrape error:", err);
             this.showNotification("Scrape error occurred", "error");
@@ -116,7 +116,7 @@ class TikTokScraper extends BaseScraper {
         return rawSrc;
     }
 
-    async extractAndSave() {
+    async extractAndSave(forceScan = false) {
         // Get all anchors
         const links = Array.from(document.querySelectorAll("a"));
 
@@ -147,17 +147,32 @@ class TikTokScraper extends BaseScraper {
         // Filter items belonging to the Top User
         const targetItems = potentialItems.filter(item => item.user === topUser);
 
-        // Filter out already scraped items (check ID/URL)
-        const newItems = this.filterNewItems(targetItems.map(i => i.href));
+        let itemsToSave;
 
-        if (newItems.length === 0) return;
+        if (forceScan) {
+            // In forceScan mode, we process ALL items on the page to update potential data URIs
+            // StorageUtils.saveAll will handle the logic to only update if we have a better thumbnail
+            itemsToSave = targetItems;
+            console.log(`[ForceScan] Checking ${itemsToSave.length} items for thumbnail updates...`);
+            this.showNotification(`Finalizing: checking ${itemsToSave.length} items for better thumbnails...`, "info");
+        } else {
+            // Normal mode: only process new items
+            const newItems = this.filterNewItems(targetItems.map(i => i.href));
+            if (newItems.length === 0) return;
+            itemsToSave = targetItems.filter(item => newItems.includes(item.href));
+        }
 
-        // We need the original item objects for the new URLs to get elements
-        const itemsToSave = targetItems.filter(item => newItems.includes(item.href));
+        if (itemsToSave.length === 0) return;
 
-        const msg = `Found ${itemsToSave.length} new items for ${topUser}`;
-        console.log(msg);
-        this.showNotification(msg, "success");
+        // Note: Removed previous 10s retry loop as it was blocking and ineffective. 
+        // We now rely on the final forceScan pass.
+
+        if (!forceScan) {
+            // Only notify for "Found new items" in normal mode
+            const msg = `Found ${itemsToSave.length} new items for ${topUser}`;
+            console.log(msg);
+            this.showNotification(msg, "success");
+        }
 
         // Save User if new
         chrome.runtime.sendMessage({
@@ -173,6 +188,7 @@ class TikTokScraper extends BaseScraper {
 
         // Save Media Items with Thumbnails
         const mediaItems = itemsToSave.map(item => {
+            // Re-extract thumbnail (in case we waited and it loaded, OR just to get the current state)
             const thumbUrl = this.getThumbnailFromAnchor(item.element);
 
             return {

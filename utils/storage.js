@@ -73,9 +73,32 @@ class StorageUtils {
             const store = transaction.objectStore(storeName);
 
             transaction.oncomplete = () => resolve();
-            transaction.onerror = () => reject(transaction.error);
+            transaction.onerror = (event) => reject(event.target.error);
 
-            items.forEach(item => store.put(item));
+            items.forEach(item => {
+                // Conditional Update Logic for Media with Data URIs
+                if (storeName === 'media' && item.thumbnailUrl && item.thumbnailUrl.startsWith('data:')) {
+                    // Check if item exists
+                    const request = store.get(item.id);
+                    request.onsuccess = () => {
+                        const existing = request.result;
+                        // If exists and has a VALID thumbnail (not data URI), do NOT overwrite
+                        if (existing && existing.thumbnailUrl && !existing.thumbnailUrl.startsWith('data:')) {
+                            console.log(`[Storage] Skipping overwrite of ${item.id} (Preserving existing valid thumbnail)`);
+                        } else {
+                            // Overwrite if it didn't exist OR if existing was also a data URI
+                            store.put(item);
+                        }
+                    };
+                    request.onerror = () => {
+                        console.error(`[Storage] Error checking existence for ${item.id}, attempting save anyway.`);
+                        store.put(item);
+                    };
+                } else {
+                    // Normal save (new valid URL will overwrite old data URI or old valid URL)
+                    store.put(item);
+                }
+            });
         });
     }
 
