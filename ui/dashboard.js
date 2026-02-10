@@ -123,7 +123,7 @@ function initUI() {
         await markItemsAsExported(data);
     });
 
-    // Delete Button
+    // Delete Action
     document.getElementById('btn-delete-confirm').addEventListener('click', async () => {
         const data = getDeleteFilterData();
         if (data.length === 0) {
@@ -131,28 +131,111 @@ function initUI() {
             return;
         }
 
-        // 1. Snapshot Download
-        const filename = `SNAPSHOT_BEFORE_DELETE_${new Date().toISOString().split('T')[0]}.json`;
-        const jsonContent = JSON.stringify(data, null, 2);
-        downloadFile(jsonContent, filename, 'application/json');
+        const btn = document.getElementById('btn-delete-confirm');
+        const originalText = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = 'Generating Snapshot...';
 
-        // 2. Confirmation
-        setTimeout(async () => {
-            const confirmed = confirm(`WARNING: You are about to PERMANENTLY delete ${data.length} items.\n\nA snapshot has been downloaded.\n\nAre you sure you want to proceed?`);
+        try {
+            // 1. Create ZIP Snapshot
+            const zip = new JSZip();
 
-            if (confirmed) {
-                try {
-                    const keys = data.map(m => m.id);
-                    await window.socialDB.deleteBatch('media', keys);
-                    alert('Deletion successful.');
-                    await loadData(); // Reload
-                    updateDeletePreview();
-                } catch (err) {
-                    console.error(err);
-                    alert('Error deleting data: ' + err.message);
+            // Add JSON Data
+            const jsonContent = JSON.stringify(data, null, 2);
+            zip.file("data_snapshot.json", jsonContent);
+
+            // Add Images Folder
+            const imgFolder = zip.folder("images");
+            const thumbnailUrls = [];
+
+            // Fetch and add images
+            let processed = 0;
+            for (const media of data) {
+                if (media.thumbnailUrl && !media.thumbnailUrl.startsWith('data:')) {
+                    thumbnailUrls.push(media.thumbnailUrl);
+                    try {
+                        // Try to get from cache first
+                        let blob = null;
+                        const cached = await window.socialDB.getThumbnail(media.thumbnailUrl);
+
+                        if (cached && cached.blob) {
+                            blob = cached.blob;
+                        } else {
+                            // Fallback to fetch (network)
+                            const resp = await fetch(media.thumbnailUrl);
+                            if (resp.ok) blob = await resp.blob();
+                        }
+
+                        if (blob) {
+                            // Determine extension
+                            const ext = blob.type.split('/')[1] || 'jpg';
+                            // Filename: platform_user_id.ext
+                            const filename = `${media.platform}_${media.userId}_${media.id}.${ext}`;
+                            imgFolder.file(filename, blob);
+                        }
+                    } catch (e) {
+                        console.warn('Failed to add image to zip:', media.thumbnailUrl, e);
+                        // Continue even if one image fails
+                    }
                 }
+
+                processed++;
+                if (processed % 10 === 0) btn.textContent = `Snapshotting... ${processed}/${data.length}`;
             }
-        }, 500);
+
+            // Generate and Download ZIP
+            btn.textContent = 'Compressing...';
+            const zipBlob = await zip.generateAsync({ type: "blob" });
+            const date = new Date().toISOString().split('T')[0];
+            const zipFilename = `BACKUP_${data.length}_Items_${date}.zip`;
+
+            const url = URL.createObjectURL(zipBlob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = zipFilename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+
+            // 2. Confirmation
+            setTimeout(async () => {
+                const confirmed = confirm(`WARNING: You are about to PERMANENTLY delete ${data.length} items and their cached thumbnails.\n\nA ZIP backup has been downloaded.\n\nAre you sure you want to proceed?`);
+
+                if (confirmed) {
+                    try {
+                        // Delete Media
+                        const mediaKeys = data.map(m => m.id);
+                        await window.socialDB.deleteBatch('media', mediaKeys);
+
+                        // Delete Thumbnails
+                        // We only delete thumbnails that were in the list. 
+                        // Note: If multiple videos share a thumbnail (unlikely), it might be deleted for both.
+                        if (thumbnailUrls.length > 0) {
+                            // Use deleteBatch on 'thumbnails' store
+                            await window.socialDB.deleteBatch('thumbnails', thumbnailUrls);
+                        }
+
+                        alert('Deletion and Cleanup successful.');
+
+                        // Reload
+                        await loadData();
+                        updateDeletePreview();
+                    } catch (err) {
+                        console.error(err);
+                        alert('Error deleting data: ' + err.message);
+                    }
+                }
+                // Reset Button
+                btn.disabled = false;
+                btn.textContent = originalText;
+            }, 500);
+
+        } catch (err) {
+            console.error("Snapshot generation failed:", err);
+            alert("Failed to generate snapshot: " + err.message);
+            btn.disabled = false;
+            btn.textContent = originalText;
+        }
     });
 
     // Wire up standard filters

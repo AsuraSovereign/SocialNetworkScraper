@@ -194,6 +194,18 @@ class StorageUtils {
         });
     }
 
+    async deleteThumbnail(url) {
+        await this.init();
+        return new Promise((resolve, reject) => {
+            const transaction = this.db.transaction(['thumbnails'], 'readwrite');
+            const store = transaction.objectStore('thumbnails');
+            const request = store.delete(url);
+
+            request.onsuccess = () => resolve();
+            request.onerror = () => reject(request.error);
+        });
+    }
+
     /**
      * Metrics Calculation
      */
