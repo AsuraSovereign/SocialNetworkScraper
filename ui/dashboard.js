@@ -394,44 +394,73 @@ function renderStats() {
         btnPopulateVal.parentNode.replaceChild(newBtn, btnPopulateVal);
 
         newBtn.addEventListener('click', async () => {
-            if (!confirm('This will iterate all videos and fetch thumbnails not currently in cache. This might take a while. Continue?')) return;
-
+            const originalText = newBtn.textContent;
             newBtn.disabled = true;
-            newBtn.textContent = 'Populating...';
+            newBtn.textContent = 'Checking Cache...';
 
-            let count = 0;
-            const total = allMedia.length;
+            try {
+                // 1. Identify missing/expired items
+                const allThumbnails = await window.socialDB.getAll('thumbnails');
+                const cachedMap = new Map();
+                allThumbnails.forEach(t => cachedMap.set(t.url, t.ttl));
 
-            // Serial execution with rate limit (0.2s delay per request)
-            for (let i = 0; i < total; i++) {
-                const media = allMedia[i];
+                const now = Date.now();
+                const itemsToProcess = [];
 
-                if (media.thumbnailUrl && !media.thumbnailUrl.startsWith('data:')) {
-                    try {
-                        // Check if exists first
-                        const cached = await window.socialDB.getThumbnail(media.thumbnailUrl);
-
-                        // If missing or expired, fetch with rate limit
-                        if (!cached || Date.now() > cached.ttl) {
-                            await fetchAndCache(media.thumbnailUrl, document.createElement('div'), null); // Dummy div
-                            count++;
-
-                            // Wait 200ms to ensure max 5 req/s
-                            await new Promise(r => setTimeout(r, 200));
+                for (const media of allMedia) {
+                    if (media.thumbnailUrl && !media.thumbnailUrl.startsWith('data:')) {
+                        const ttl = cachedMap.get(media.thumbnailUrl);
+                        // If missing OR expired
+                        if (ttl === undefined || now > ttl) {
+                            itemsToProcess.push(media);
                         }
-                    } catch (e) { console.error(e); }
+                    }
                 }
 
-                // Update progess
-                if (i % 5 === 0 || i === total - 1) {
+                if (itemsToProcess.length === 0) {
+                    alert('Cache is already up to date!');
+                    newBtn.textContent = originalText;
+                    newBtn.disabled = false;
+                    return;
+                }
+
+                // 2. Confirm with user
+                if (!confirm(`Found ${itemsToProcess.length} thumbnails that need to be fetched/refreshed.\n\nContinue?`)) {
+                    newBtn.textContent = originalText;
+                    newBtn.disabled = false;
+                    return;
+                }
+
+                newBtn.textContent = 'Populating...';
+                let count = 0;
+                const total = itemsToProcess.length;
+
+                // 3. Process filtered list
+                for (let i = 0; i < total; i++) {
+                    const media = itemsToProcess[i];
+
+                    try {
+                        await fetchAndCache(media.thumbnailUrl, document.createElement('div'), null); // Dummy div
+                        count++;
+
+                        // Wait 200ms to ensure max 5 req/s
+                        await new Promise(r => setTimeout(r, 200));
+                    } catch (e) { console.error(e); }
+
+                    // Update progress
                     newBtn.textContent = `Populating... (${i + 1}/${total})`;
                 }
-            }
 
-            newBtn.textContent = 'Populate Cache';
-            newBtn.disabled = false;
-            alert(`Cache population complete. Fetched/Refreshed ${count} thumbnails.`);
-            renderStorageStats();
+                alert(`Cache population complete. Processed ${count} thumbnails.`);
+                renderStorageStats();
+
+            } catch (err) {
+                console.error("Populate Error:", err);
+                alert("An error occurred while populating cache.");
+            } finally {
+                newBtn.textContent = 'Populate Cache';
+                newBtn.disabled = false;
+            }
         });
     }
 
