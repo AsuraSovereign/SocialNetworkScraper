@@ -74,14 +74,28 @@ async function loadData() {
     await window.socialDB.init();
     allMedia = await window.socialDB.getAll('media');
 
-    // Smart Default: Check New Only if there are unexported items
+    renderStats(); // Populates User Filter Dropdown
+
+    // Smart Default Logic
     const hasUnexported = allMedia.some(m => !m.exported);
     const filterNewOnly = document.getElementById('filter-new-only');
-    if (filterNewOnly) {
-        filterNewOnly.checked = hasUnexported;
-    }
+    const filterUser = document.getElementById('filter-user');
 
-    renderStats(); // Default view
+    if (hasUnexported) {
+        // Option A: Show New Only (Default behavior if new items exist)
+        if (filterNewOnly) filterNewOnly.checked = true;
+    } else {
+        // Option B: Show Last Scraped User (If no new items)
+        if (filterNewOnly) filterNewOnly.checked = false;
+
+        if (allMedia.length > 0) {
+            // Find item with max scrapedAt
+            const lastItem = allMedia.reduce((prev, current) => (prev.scrapedAt > current.scrapedAt) ? prev : current);
+            if (lastItem && lastItem.userId && filterUser) {
+                filterUser.value = lastItem.userId;
+            }
+        }
+    }
 }
 
 // --- STATS ---
