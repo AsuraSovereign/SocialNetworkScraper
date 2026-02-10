@@ -178,6 +178,100 @@ class StorageUtils {
             request.onerror = () => reject(request.error);
         });
     }
+
+    /**
+     * Metrics Calculation
+     */
+    async getStorageUsage() {
+        await this.init();
+
+        // Helper to calc string size in bytes (approx)
+        const getSize = (obj) => JSON.stringify(obj).length * 2;
+
+        return new Promise((resolve, reject) => {
+            const transaction = this.db.transaction(['media', 'thumbnails'], 'readonly');
+            const mediaStore = transaction.objectStore('media');
+            const thumbStore = transaction.objectStore('thumbnails');
+
+            let mediaSize = 0;
+            let thumbSize = 0;
+            let invalidThumbCount = 0;
+            let cachedThumbCount = 0;
+            const userUsage = {};
+            let totalMediaCount = 0;
+
+            // 1. Process Media (getAll is fine for metadata)
+            const mediaRequest = mediaStore.getAll();
+
+            mediaRequest.onsuccess = () => {
+                const media = mediaRequest.result;
+                totalMediaCount = media.length;
+
+                media.forEach(m => {
+                    const size = getSize(m);
+                    mediaSize += size;
+
+                    // User Usage
+                    if (m.userId) {
+                        userUsage[m.userId] = (userUsage[m.userId] || 0) + size;
+                    }
+
+                    // Invalid Thumbnail Check
+                    if (!m.thumbnailUrl || m.thumbnailUrl.startsWith('data:')) {
+                        invalidThumbCount++;
+                    }
+                });
+
+                // 2. Process Thumbnails via Cursor (Memory Safe)
+                const thumbCursor = thumbStore.openCursor();
+
+                thumbCursor.onsuccess = (e) => {
+                    const cursor = e.target.result;
+                    if (cursor) {
+                        const t = cursor.value;
+                        cachedThumbCount++;
+
+                        if (t.blob && t.blob.size) {
+                            thumbSize += t.blob.size;
+                        } else {
+                            thumbSize += getSize(t);
+                        }
+
+                        cursor.continue();
+                    } else {
+                        // Done iterating
+                        finalize();
+                    }
+                };
+
+                thumbCursor.onerror = () => reject(thumbCursor.error);
+            };
+
+            mediaRequest.onerror = () => reject(mediaRequest.error);
+
+            function finalize() {
+                // Top User
+                let topUser = { userId: 'None', size: 0 };
+                for (const [userId, size] of Object.entries(userUsage)) {
+                    if (size > topUser.size) {
+                        topUser = { userId, size };
+                    }
+                }
+
+                resolve({
+                    totalSizeBytes: mediaSize + thumbSize,
+                    thumbnailSizeBytes: thumbSize,
+                    topUser: topUser,
+                    counts: {
+                        totalVideos: totalMediaCount,
+                        cachedThumbnails: cachedThumbCount,
+                        invalidThumbnails: invalidThumbCount,
+                        videosNotCached: Math.max(0, totalMediaCount - cachedThumbCount)
+                    }
+                });
+            }
+        });
+    }
 }
 
 // Global instance for Contexts (Window or Service Worker)

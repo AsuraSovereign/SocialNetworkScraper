@@ -124,6 +124,37 @@ function renderStats() {
 
     populate(filterUser);
     populate(document.getElementById('export-user'));
+
+    // Render Storage Stats (Async but we don't await to not block UI)
+    renderStorageStats();
+}
+
+async function renderStorageStats() {
+    try {
+        const stats = await window.socialDB.getStorageUsage();
+
+        // Format Bytes
+        const formatSize = (bytes) => {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        };
+
+        document.getElementById('stat-db-usage').textContent = formatSize(stats.totalSizeBytes);
+        document.getElementById('stat-thumb-usage').textContent = `Thumbnails: ${formatSize(stats.thumbnailSizeBytes)}`;
+
+        document.getElementById('stat-top-user').textContent = stats.topUser.userId !== 'None' ? stats.topUser.userId : '-';
+        document.getElementById('stat-top-user-size').textContent = `Size: ${formatSize(stats.topUser.size)}`;
+
+        document.getElementById('stat-cache-count').textContent = stats.counts.cachedThumbnails;
+        document.getElementById('stat-cache-missing').textContent = stats.counts.videosNotCached;
+        document.getElementById('stat-cache-invalid').textContent = stats.counts.invalidThumbnails;
+
+    } catch (err) {
+        console.error("Error rendering storage stats:", err);
+    }
 }
 
 // --- VIDEOS GRID ---
@@ -179,29 +210,16 @@ function renderVideos(reset = true) {
         const card = document.createElement('div');
         card.className = 'video-card';
 
-        // Thumbnail Logic
-        let thumbHtml;
-        if (media.thumbnailUrl) {
-            thumbHtml = `<div class="thumb" loading="lazy" style="background-image: url('${media.thumbnailUrl}')"></div>`;
-        } else {
-            // Extract Video ID
-            const parts = media.originalUrl.split('/');
-            const videoId = parts[parts.length - 1].split('?')[0] || 'Unknown';
-            const dateStr = new Date(media.scrapedAt).toLocaleDateString();
-
-            thumbHtml = `
-                <div class="thumb placeholder" style="flex-direction: column; padding: 10px; text-align: center;">
-                    <span style="font-size: 0.8rem; color: #888; margin-bottom: 5px;">ID: ${videoId}</span>
-                    <span style="font-size: 0.7rem; color: #555;">Scraped: ${dateStr}</span>
-                </div>
-            `;
-        }
+        // Placeholder structure - Thumbnail loaded async
+        const dateStr = new Date(media.scrapedAt).toLocaleDateString();
 
         card.innerHTML = `
-            ${thumbHtml}
+            <div class="thumb loading" style="background-color: #222; display:flex; align-items:center; justify-content:center;">
+                <span class="loader" style="color:#555">...</span>
+            </div>
             <div class="video-info">
                 <h3>${media.userId}</h3>
-                <p>${new Date(media.scrapedAt).toLocaleDateString()}</p>
+                <p>${dateStr}</p>
                 <div class="actions">
                     <a href="${media.originalUrl}" target="_blank">View</a>
                     <button class="btn-download" data-url="${media.originalUrl}">Download</button>
@@ -209,13 +227,129 @@ function renderVideos(reset = true) {
                 </div>
             </div>
         `;
+
         fragment.appendChild(card);
+
+        // Trigger Async Load
+        loadThumbnailForCard(card, media);
     });
 
     grid.appendChild(fragment);
 
     // 4. Setup Infinite Scroll Observer
     setupObserver();
+}
+
+/**
+ * Thumbnail Caching Logic
+ * 7 Days TTL, Extend on Fail
+ */
+async function loadThumbnailForCard(card, media) {
+    const thumbDiv = card.querySelector('.thumb');
+    const url = media.thumbnailUrl;
+
+    // 1. Handle Invalid/Missing URLs
+    if (!url) {
+        showPlaceholder(thumbDiv, media);
+        return;
+    }
+
+    // 2. Handle Data URIs (Direct usage, no caching needed/possible efficiently)
+    if (url.startsWith('data:')) {
+        thumbDiv.style.backgroundImage = `url('${url}')`;
+        thumbDiv.classList.remove('loading');
+        thumbDiv.innerHTML = '';
+        return;
+    }
+
+    // 3. Cache Logic
+    const TTL = 7 * 24 * 60 * 60 * 1000; // 7 Days in ms
+    // const TTL = 10000; // Debug: 10 seconds
+
+    try {
+        const cached = await window.socialDB.getThumbnail(url);
+        const now = Date.now();
+
+        if (cached) {
+            if (now < cached.ttl) {
+                // HIT & VALID
+                const blobUrl = URL.createObjectURL(cached.blob);
+                thumbDiv.style.backgroundImage = `url('${blobUrl}')`;
+                thumbDiv.classList.remove('loading');
+                thumbDiv.innerHTML = '';
+            } else {
+                // HIT & EXPIRED -> Re-fetch
+                console.log(`[Cache] Expired: ${url}`);
+                fetchAndCache(url, thumbDiv, cached.blob); // Pass old blob as fallback
+            }
+        } else {
+            // MISS -> Fetch
+            fetchAndCache(url, thumbDiv, null);
+        }
+    } catch (err) {
+        console.error("Cache Error:", err);
+        // Fallback to direct URL if cache fails completely
+        thumbDiv.style.backgroundImage = `url('${url}')`;
+        thumbDiv.innerHTML = '';
+    }
+}
+
+async function fetchAndCache(url, thumbDiv, fallbackBlob) {
+    const TTL = 7 * 24 * 60 * 60 * 1000;
+
+    try {
+        const response = await fetch(url);
+        if (!response.ok) throw new Error('Network response was not ok');
+
+        const blob = await response.blob();
+
+        // Save New
+        await window.socialDB.saveThumbnail({
+            url: url,
+            blob: blob,
+            ttl: Date.now() + TTL
+        });
+
+        const blobUrl = URL.createObjectURL(blob);
+        thumbDiv.style.backgroundImage = `url('${blobUrl}')`;
+        thumbDiv.classList.remove('loading');
+        thumbDiv.innerHTML = '';
+
+    } catch (err) {
+        console.warn(`[Cache] Fetch failed for ${url}:`, err);
+
+        if (fallbackBlob) {
+            // EXTEND TTL for Old Blob
+            console.log(`[Cache] Extending TTL for old blob (7 days)`);
+            await window.socialDB.saveThumbnail({
+                url: url,
+                blob: fallbackBlob,
+                ttl: Date.now() + TTL
+            });
+
+            const blobUrl = URL.createObjectURL(fallbackBlob);
+            thumbDiv.style.backgroundImage = `url('${blobUrl}')`;
+            thumbDiv.classList.remove('loading');
+            thumbDiv.innerHTML = '';
+        } else {
+            // No fallback, just show error placeholder or try direct URL (which likely fails too)
+            showPlaceholder(thumbDiv, { originalUrl: url, scrapedAt: Date.now() }, "Load Failed");
+        }
+    }
+}
+
+function showPlaceholder(thumbDiv, media, msg = null) {
+    const parts = media.originalUrl ? media.originalUrl.split('/') : ['Unknown'];
+    const videoId = parts[parts.length - 1].split('?')[0] || 'Unknown';
+
+    thumbDiv.classList.add('placeholder');
+    thumbDiv.classList.remove('loading');
+    thumbDiv.innerHTML = `
+        <div style="flex-direction: column; padding: 10px; text-align: center;">
+            <span style="font-size: 0.8rem; color: #888; margin-bottom: 5px;">ID: ${videoId}</span>
+            ${msg ? `<span style="font-size: 0.7rem; color: #ff0050;">${msg}</span>` : ''}
+        </div>
+    `;
 }
 
 function updateVideoStatsHeader(filteredData) {

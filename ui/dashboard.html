@@ -43,6 +43,30 @@
                         <p id="stat-last-active">-</p>
                     </div>
                 </div>
+
+                <!-- STORAGE STATS -->
+                <h2 style="margin-top: 30px;">Storage & Cache</h2>
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <h3>DB Usage</h3>
+                        <p id="stat-db-usage">Loading...</p>
+                        <small id="stat-thumb-usage" style="color:#888; display:block; margin-top:5px;"></small>
+                    </div>
+                    <div class="stat-card">
+                        <h3>Top User (Space)</h3>
+                        <p id="stat-top-user">Loading...</p>
+                        <small id="stat-top-user-size" style="color:#888; display:block; margin-top:5px;"></small>
+                    </div>
+                    <div class="stat-card">
+                        <h3>Thumbnail Status</h3>
+                        <ul
+                            style="list-style:none; padding:0; margin:10px 0 0 0; font-size:0.9rem; color:#ccc; line-height: 1.6;">
+                            <li>Cached: <strong id="stat-cache-count" style="color:#00f2ea">0</strong></li>
+                            <li>Not In Cache: <strong id="stat-cache-missing" style="color:#ffcc00">0</strong></li>
+                            <li>Invalid URL: <strong id="stat-cache-invalid" style="color:#ff0050">0</strong></li>
+                        </ul>
+                    </div>
+                </div>
             </div>
 
             <!-- VIDEOS TAB -->
