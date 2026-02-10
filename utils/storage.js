@@ -2,7 +2,7 @@
  * Storage Utility (IndexedDB Wrapper)
  */
 const DB_NAME = 'SocialScraperDB';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 class StorageUtils {
     constructor() {
@@ -38,6 +38,11 @@ class StorageUtils {
                 // Settings Store
                 if (!db.objectStoreNames.contains('settings')) {
                     db.createObjectStore('settings', { keyPath: 'key' });
+                }
+
+                // Thumbnail Cache Store
+                if (!db.objectStoreNames.contains('thumbnails')) {
+                    db.createObjectStore('thumbnails', { keyPath: 'url' });
                 }
             };
 
@@ -144,6 +149,33 @@ class StorageUtils {
             transaction.onerror = () => reject(transaction.error);
 
             keys.forEach(key => store.delete(key));
+        });
+    }
+
+    /**
+     * Thumbnail Cache Methods
+     */
+    async getThumbnail(url) {
+        await this.init();
+        return new Promise((resolve, reject) => {
+            const transaction = this.db.transaction(['thumbnails'], 'readonly');
+            const store = transaction.objectStore('thumbnails');
+            const request = store.get(url);
+
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error);
+        });
+    }
+
+    async saveThumbnail(data) {
+        await this.init();
+        return new Promise((resolve, reject) => {
+            const transaction = this.db.transaction(['thumbnails'], 'readwrite');
+            const store = transaction.objectStore('thumbnails');
+            const request = store.put(data); // { url, blob, ttl }
+
+            request.onsuccess = () => resolve();
+            request.onerror = () => reject(request.error);
         });
     }
 }
