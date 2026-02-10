@@ -73,6 +73,14 @@ async function loadData() {
 
     await window.socialDB.init();
     allMedia = await window.socialDB.getAll('media');
+
+    // Smart Default: Check New Only if there are unexported items
+    const hasUnexported = allMedia.some(m => !m.exported);
+    const filterNewOnly = document.getElementById('filter-new-only');
+    if (filterNewOnly) {
+        filterNewOnly.checked = hasUnexported;
+    }
+
     renderStats(); // Default view
 }
 
@@ -110,8 +118,12 @@ let currentPage = 0;
 const PAGE_SIZE = 40;
 let observer = null;
 
+const filterNewOnly = document.getElementById('filter-new-only');
+filterNewOnly.addEventListener('change', () => renderVideos());
+
 function renderVideos(reset = true) {
     const grid = document.getElementById('video-grid');
+    const statsHeader = document.getElementById('video-stats-header');
 
     if (reset) {
         grid.innerHTML = ''; // Clear
@@ -120,15 +132,21 @@ function renderVideos(reset = true) {
         // 1. Filter Data Only on Reset
         const pFilter = filterPlatform.value;
         const uFilter = filterUser.value;
+        const newOnly = filterNewOnly.checked;
 
         currentFiltered = allMedia.filter(m => {
             if (pFilter !== 'ALL' && m.platform !== pFilter) return false;
             if (uFilter !== 'ALL' && m.userId !== uFilter) return false;
+            // "New" means NOT exported
+            if (newOnly && m.exported === true) return false;
             return true;
         });
 
         // Sort by date desc (optional, but good for UX)
         currentFiltered.sort((a, b) => b.scrapedAt - a.scrapedAt);
+
+        // Update Stats Header
+        updateVideoStatsHeader(currentFiltered);
     }
 
     // 2. Pagination Logic
@@ -137,7 +155,7 @@ function renderVideos(reset = true) {
     const batch = currentFiltered.slice(start, end);
 
     if (batch.length === 0 && reset) {
-        grid.innerHTML = '<div style="grid-column: 1/-1; text-align: center; padding: 20px;">No videos found.</div>';
+        grid.innerHTML = '<div style="grid-column: 1/-1; text-align: center; padding: 20px;">No videos found matching criteria.</div>';
         return;
     }
 
@@ -173,6 +191,7 @@ function renderVideos(reset = true) {
                 <div class="actions">
                     <a href="${media.originalUrl}" target="_blank">View</a>
                     <button class="btn-download" data-url="${media.originalUrl}">Download</button>
+                    ${!media.exported ? '<span title="New / Not Exported" style="color: #00f2ea; font-size: 0.8rem;">● New</span>' : ''}
                 </div>
             </div>
         `;
@@ -183,6 +202,36 @@ function renderVideos(reset = true) {
 
     // 4. Setup Infinite Scroll Observer
     setupObserver();
+}
+
+function updateVideoStatsHeader(filteredData) {
+    const statsHeader = document.getElementById('video-stats-header');
+    if (!statsHeader) return;
+
+    if (filteredData.length === 0) {
+        statsHeader.innerHTML = 'No items to display.';
+        return;
+    }
+
+    const uniqueUsers = new Set(filteredData.map(m => m.userId)).size;
+    const totalVideos = filteredData.length;
+    const lastScrapeTime = Math.max(...filteredData.map(m => m.scrapedAt));
+    const lastScrapeDate = new Date(lastScrapeTime).toLocaleString();
+
+    let text = '';
+
+    if (filterUser.value !== 'ALL') {
+        // Specific User View
+        text = `<strong>${filterUser.value}</strong> &bull; ${totalVideos} Videos &bull; Last Scraped: ${lastScrapeDate}`;
+    } else {
+        // All Users View
+        text = `Showing <strong>${uniqueUsers}</strong> Users &bull; <strong>${totalVideos}</strong> Videos total`;
+        if (filterNewOnly.checked) {
+            text += ` (New / Unexported)`;
+        }
+    }
+
+    statsHeader.innerHTML = text;
 }
 
 function setupObserver() {
@@ -227,6 +276,25 @@ document.getElementById('video-grid').addEventListener('click', (e) => {
 const exportPlatform = document.getElementById('export-platform');
 const exportUser = document.getElementById('export-user');
 const exportNewOnly = document.getElementById('export-new-only');
+
+// Initialize Export Settings (Persistence)
+function initExportSettings() {
+    const storedVal = localStorage.getItem('socialScraper_exportNewOnly');
+
+    // Default to true if not set, otherwise parse stored value
+    if (storedVal === null) {
+        exportNewOnly.checked = true;
+    } else {
+        exportNewOnly.checked = storedVal === 'true';
+    }
+
+    // Save on change
+    exportNewOnly.addEventListener('change', () => {
+        localStorage.setItem('socialScraper_exportNewOnly', exportNewOnly.checked);
+        updateLivePreview(); // Existing listener triggers this too, but for clarity
+    });
+}
+initExportSettings();
 
 function getExportData() {
     const pFilter = exportPlatform.value;
