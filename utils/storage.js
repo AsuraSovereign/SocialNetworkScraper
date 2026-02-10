@@ -153,6 +153,21 @@ class StorageUtils {
     }
 
     /**
+     * Clear a specific store
+     */
+    async clearStore(storeName) {
+        await this.init();
+        return new Promise((resolve, reject) => {
+            const transaction = this.db.transaction([storeName], 'readwrite');
+            const store = transaction.objectStore(storeName);
+            const request = store.clear();
+
+            request.onsuccess = () => resolve();
+            request.onerror = () => reject(request.error);
+        });
+    }
+
+    /**
      * Thumbnail Cache Methods
      */
     async getThumbnail(url) {

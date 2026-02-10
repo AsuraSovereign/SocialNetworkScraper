@@ -1,0 +1,101 @@
+<div class="header-section">
+    <h1>Export Data</h1>
+    <p>Customize and download your scraped video records.</p>
+</div>
+
+<div class="export-grid">
+    <!-- Card 1: Global Filters -->
+    <div class="modern-card">
+        <div class="card-header">
+            <h3>Global Filters</h3>
+        </div>
+        <div class="card-body">
+            <div class="filter-flex">
+                <div class="filter-group">
+                    <label>Platform</label>
+                    <select id="export-platform" class="modern-select">
+                        <option value="ALL">All Platforms</option>
+                        <option value="TikTok">TikTok</option>
+                        <option value="Facebook">Facebook</option>
+                        <option value="Instagram">Instagram</option>
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label>User</label>
+                    <select id="export-user" class="modern-select">
+                        <option value="ALL">All Users</option>
+                    </select>
+                </div>
+            </div>
+            <div class="toggle-row">
+                <label class="toggle-switch">
+                    <input type="checkbox" id="export-new-only">
+                    <span class="slider"></span>
+                </label>
+                <span>Export only new items (incremental)</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Card 2: Data Columns (CSV) -->
+    <div class="modern-card">
+        <div class="card-header">
+            <h3>Data Columns (CSV)</h3>
+        </div>
+        <div class="card-body">
+            <div class="pills-container" id="column-pills">
+                <!-- Pills -->
+                <label class="pill-checkbox">
+                    <input type="checkbox" value="originalUrl" checked>
+                    <span class="pill-label">Video URL</span>
+                </label>
+                <label class="pill-checkbox">
+                    <input type="checkbox" value="scrapedAt" checked>
+                    <span class="pill-label">Date Scraped</span>
+                </label>
+                <label class="pill-checkbox">
+                    <input type="checkbox" value="userId" checked>
+                    <span class="pill-label">Username</span>
+                </label>
+                <label class="pill-checkbox">
+                    <input type="checkbox" value="platform" checked>
+                    <span class="pill-label">Platform</span>
+                </label>
+                <label class="pill-checkbox">
+                    <input type="checkbox" value="videoId" checked>
+                    <span class="pill-label">Video ID</span>
+                </label>
+                <label class="pill-checkbox">
+                    <input type="checkbox" value="thumbnailUrl">
+                    <span class="pill-label">Thumbnail URL</span>
+                </label>
+            </div>
+
+            <div class="action-buttons">
+                <button id="btn-export-csv" class="btn-primary-large">
+                    <span class="icon">⬇</span> Export Data (CSV)
+                </button>
+                <button id="btn-export-txt" class="btn-secondary-outline">
+                    <span class="icon">📄</span> Download TXT List
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Card 3: Live Preview -->
+    <div class="modern-card">
+        <div class="card-header">
+            <h3>Live Preview (3 rows)</h3>
+        </div>
+        <div class="card-body table-wrapper">
+            <table id="preview-table" class="modern-table">
+                <thead>
+                    <!-- Headers (Dynamic) -->
+                </thead>
+                <tbody>
+                    <!-- Rows (Dynamic) -->
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>

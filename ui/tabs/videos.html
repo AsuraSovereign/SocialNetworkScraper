@@ -1,0 +1,25 @@
+<div class="header-row">
+    <h1>All Videos</h1>
+    <div class="filters">
+        <select id="filter-platform" class="filter-select">
+            <option value="ALL">All Platforms</option>
+            <option value="TikTok">TikTok</option>
+            <option value="Facebook">Facebook</option>
+            <option value="Instagram">Instagram</option>
+        </select>
+        <select id="filter-user" class="filter-select">
+            <option value="ALL">All Users</option>
+            <!-- Users injected by JS -->
+        </select>
+        <label style="display: flex; align-items: center; gap: 8px; color: #ccc; font-size: 0.9rem; cursor: pointer;">
+            <input type="checkbox" id="filter-new-only" checked>
+            Show New Only
+        </label>
+    </div>
+</div>
+<div id="video-stats-header" style="margin-bottom: 20px; color: #888; font-size: 0.95rem;">
+    <!-- Injected by JS -->
+</div>
+<div id="video-grid" class="video-grid">
+    <!-- Cards injected here -->
+</div>

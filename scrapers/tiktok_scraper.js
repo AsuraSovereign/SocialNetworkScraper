@@ -164,9 +164,6 @@ class TikTokScraper extends BaseScraper {
 
         if (itemsToSave.length === 0) return;
 
-        // Note: Removed previous 10s retry loop as it was blocking and ineffective. 
-        // We now rely on the final forceScan pass.
-
         if (!forceScan) {
             // Only notify for "Found new items" in normal mode
             const msg = `Found ${itemsToSave.length} new items for ${topUser}`;

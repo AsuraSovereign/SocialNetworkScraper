@@ -1,4 +1,4 @@
-// DOM Elements
+// DOM Elements (Initialized in initUI)
 const contentArea = document.getElementById('content-area');
 const statsTab = document.getElementById('tab-stats');
 const videosTab = document.getElementById('tab-videos');
@@ -10,23 +10,189 @@ const linkVideos = document.getElementById('link-videos');
 const linkExport = document.getElementById('link-export');
 const linkDelete = document.getElementById('link-delete');
 
-// Filters
-const filterPlatform = document.getElementById('filter-platform');
-const filterUser = document.getElementById('filter-user');
+// Filters & UI Elements (Initialized in initUI)
+let filterPlatform, filterUser, filterNewOnly;
+let exportPlatform, exportUser, exportNewOnly;
+let deletePlatform, deleteUser, deleteCountParams;
 
 // State
 let allMedia = [];
 
 // Init
 async function init() {
+    await loadTabs();
+    initUI();
     setupNavigation();
     setupFilters();
     loadData();
 }
 
+async function loadTabs() {
+    const tabs = [
+        { id: 'tab-stats', file: 'tabs/stats.html' },
+        { id: 'tab-videos', file: 'tabs/videos.html' },
+        { id: 'tab-export', file: 'tabs/export.html' },
+        { id: 'tab-delete', file: 'tabs/delete.html' }
+    ];
+
+    const promises = tabs.map(async (tab) => {
+        try {
+            const response = await fetch(tab.file);
+            const html = await response.text();
+            document.getElementById(tab.id).innerHTML = html;
+        } catch (err) {
+            console.error(`Failed to load ${tab.file}:`, err);
+            document.getElementById(tab.id).innerHTML = `<p style="color:red">Error loading ${tab.file}</p>`;
+        }
+    });
+
+    await Promise.all(promises);
+}
+
+function initUI() {
+    // Videos Tab Elements
+    filterPlatform = document.getElementById('filter-platform');
+    filterUser = document.getElementById('filter-user');
+    filterNewOnly = document.getElementById('filter-new-only');
+
+    // Export Tab Elements
+    exportPlatform = document.getElementById('export-platform');
+    exportUser = document.getElementById('export-user');
+    exportNewOnly = document.getElementById('export-new-only');
+
+    // Delete Tab Elements
+    deletePlatform = document.getElementById('delete-platform');
+    deleteUser = document.getElementById('delete-user');
+    deleteCountParams = document.getElementById('delete-count');
+
+    // Re-attach specific listeners that depended on these elements being present
+    // Note: Some listeners were attached globally or in setupFilters, checking below...
+
+    // Export UI Logic Init
+    if (exportNewOnly) {
+        // Export Settings Persistence
+        const storedVal = localStorage.getItem('socialScraper_exportNewOnly');
+        if (storedVal === null) {
+            exportNewOnly.checked = true;
+        } else {
+            exportNewOnly.checked = storedVal === 'true';
+        }
+
+        exportNewOnly.addEventListener('change', () => {
+            localStorage.setItem('socialScraper_exportNewOnly', exportNewOnly.checked);
+            updateLivePreview();
+        });
+    }
+
+    // Export Buttons
+    document.getElementById('btn-export-txt').addEventListener('click', async () => {
+        const data = getExportData();
+        if (data.length === 0) { alert('No data matches your filters.'); return; }
+
+        const text = data.map(m => m.originalUrl).join('\n');
+        const filename = generateExportFilename('txt');
+        downloadFile(text, filename, 'text/plain');
+
+        await markItemsAsExported(data);
+    });
+
+    document.getElementById('btn-export-csv').addEventListener('click', async () => {
+        const data = getExportData();
+        if (data.length === 0) { alert('No data matches your filters.'); return; }
+
+        const columns = getSelectedColumns();
+        if (columns.length === 0) { alert('Please select at least one column.'); return; }
+
+        // Header
+        const header = columns.map(c => formatColumnName(c)).join(',') + '\n';
+
+        // Rows
+        const rows = data.map(m => {
+            return columns.map(col => {
+                let val = m[col] || '';
+                if (col === 'scrapedAt') val = new Date(val).toISOString();
+                // Escape CSV injection/commas
+                const str = String(val).replace(/"/g, '""');
+                return `"${str}"`;
+            }).join(',');
+        }).join('\n');
+
+        const filename = generateExportFilename('csv');
+        downloadFile(header + rows, filename, 'text/csv');
+
+        await markItemsAsExported(data);
+    });
+
+    // Delete Button
+    document.getElementById('btn-delete-confirm').addEventListener('click', async () => {
+        const data = getDeleteFilterData();
+        if (data.length === 0) {
+            alert('No data to delete.');
+            return;
+        }
+
+        // 1. Snapshot Download
+        const filename = `SNAPSHOT_BEFORE_DELETE_${new Date().toISOString().split('T')[0]}.json`;
+        const jsonContent = JSON.stringify(data, null, 2);
+        downloadFile(jsonContent, filename, 'application/json');
+
+        // 2. Confirmation
+        setTimeout(async () => {
+            const confirmed = confirm(`WARNING: You are about to PERMANENTLY delete ${data.length} items.\n\nA snapshot has been downloaded.\n\nAre you sure you want to proceed?`);
+
+            if (confirmed) {
+                try {
+                    const keys = data.map(m => m.id);
+                    await window.socialDB.deleteBatch('media', keys);
+                    alert('Deletion successful.');
+                    await loadData(); // Reload
+                    updateDeletePreview();
+                } catch (err) {
+                    console.error(err);
+                    alert('Error deleting data: ' + err.message);
+                }
+            }
+        }, 500);
+    });
+
+    // Wire up standard filters
+    if (filterNewOnly) filterNewOnly.addEventListener('change', () => renderVideos());
+
+    // Wire up Export/Delete filters
+    [exportPlatform, exportUser].forEach(el => {
+        if (el) el.addEventListener('change', updateLivePreview);
+    });
+    if (exportNewOnly) exportNewOnly.addEventListener('change', updateLivePreview); // Attached above but safe to double check
+
+    document.querySelectorAll('#column-pills input').forEach(cb => {
+        cb.addEventListener('change', updateLivePreview);
+    });
+
+    [deletePlatform, deleteUser].forEach(el => {
+        if (el) el.addEventListener('change', updateDeletePreview);
+    });
+
+    // Event Delegation for Video Grid is on #video-grid which is dynamically loaded
+    // But we can attach to document or re-attach to grid.
+    // Better to attach to #video-grid inside initUI?
+    // Actually, let's keep the global delegation on 'video-grid' if possible, or delegation on content-area
+    // The original code had listener on 'video-grid' which now doesn't exist at parsed time.
+    const videoGrid = document.getElementById('video-grid');
+    if (videoGrid) {
+        videoGrid.addEventListener('click', (e) => {
+            if (e.target.classList.contains('btn-download')) {
+                const url = e.target.getAttribute('data-url');
+                if (url) {
+                    chrome.runtime.sendMessage({ action: 'DOWNLOAD_MEDIA', payload: { url: url } });
+                }
+            }
+        });
+    }
+}
+
 function setupFilters() {
-    filterPlatform.addEventListener('change', () => renderVideos());
-    filterUser.addEventListener('change', () => renderVideos());
+    if (filterPlatform) filterPlatform.addEventListener('change', () => renderVideos());
+    if (filterUser) filterUser.addEventListener('change', () => renderVideos());
 }
 
 function setupNavigation() {
@@ -54,6 +220,7 @@ function showTab(tabName) {
         statsTab.style.display = 'block';
         linkStats.classList.add('active');
         renderStats();
+        renderStorageStats(); // Refresh storage stats on tab view
     } else if (tabName === 'videos') {
         videosTab.style.display = 'block';
         linkVideos.classList.add('active');
@@ -61,6 +228,7 @@ function showTab(tabName) {
     } else if (tabName === 'export') {
         exportTab.style.display = 'block';
         linkExport.classList.add('active');
+        updateLivePreview();
     } else if (tabName === 'delete') {
         deleteTab.style.display = 'block';
         updateDeletePreview();
@@ -76,17 +244,17 @@ async function loadData() {
 
     renderStats(); // Populates User Filter Dropdown
 
-    // Smart Default Logic
+    // Smart Default Logic (Requires UI elements to be ready)
+    if (!filterNewOnly || !filterUser) return; // Safety check
+
     const hasUnexported = allMedia.some(m => !m.exported);
-    const filterNewOnly = document.getElementById('filter-new-only');
-    const filterUser = document.getElementById('filter-user');
 
     if (hasUnexported) {
         // Option A: Show New Only (Default behavior if new items exist)
-        if (filterNewOnly) filterNewOnly.checked = true;
+        filterNewOnly.checked = true;
     } else {
         // Option B: Show Last Scraped User (If no new items)
-        if (filterNewOnly) filterNewOnly.checked = false;
+        filterNewOnly.checked = false;
 
         if (allMedia.length > 0) {
             // Find item with max scrapedAt
@@ -100,11 +268,15 @@ async function loadData() {
 
 // --- STATS ---
 function renderStats() {
+    // Safety check if elements exist
+    const elVideos = document.getElementById('stat-total-videos');
+    if (!elVideos) return;
+
     const totalVideos = allMedia.length;
     const users = new Set(allMedia.map(m => m.userId)).size;
     const lastScrape = allMedia.length > 0 ? new Date(Math.max(...allMedia.map(m => m.scrapedAt))).toLocaleString() : 'Never';
 
-    document.getElementById('stat-total-videos').textContent = totalVideos;
+    elVideos.textContent = totalVideos;
     document.getElementById('stat-total-users').textContent = users;
     document.getElementById('stat-last-active').textContent = lastScrape;
 
@@ -112,18 +284,86 @@ function renderStats() {
     const userList = [...new Set(allMedia.map(m => m.userId))];
 
     // Helper to populate select
-    const populate = (select) => {
-        select.innerHTML = '<option value="ALL">All Users</option>';
+    const populate = (select, includeAll = true) => {
+        if (!select) return;
+        const current = select.value;
+        select.innerHTML = includeAll ? '<option value="ALL">All Users</option>' : '';
         userList.forEach(u => {
             const opt = document.createElement('option');
             opt.value = u;
             opt.textContent = u;
             select.appendChild(opt);
         });
+        if (current && (userList.includes(current) || current === 'ALL')) select.value = current;
     };
 
     populate(filterUser);
-    populate(document.getElementById('export-user'));
+    populate(exportUser);
+    populate(deleteUser);
+
+    // Cache Buttons Logic
+    const btnPopulateVal = document.getElementById('btn-populate-cache');
+    const btnClearVal = document.getElementById('btn-clear-cache');
+
+    if (btnPopulateVal) {
+        // Clone to remove old listeners (simple way in this context)
+        const newBtn = btnPopulateVal.cloneNode(true);
+        btnPopulateVal.parentNode.replaceChild(newBtn, btnPopulateVal);
+
+        newBtn.addEventListener('click', async () => {
+            if (!confirm('This will iterate all videos and fetch thumbnails not currently in cache. This might take a while. Continue?')) return;
+
+            newBtn.disabled = true;
+            newBtn.textContent = 'Populating...';
+
+            let count = 0;
+            const total = allMedia.length;
+
+            // Serial execution with rate limit (0.2s delay per request)
+            for (let i = 0; i < total; i++) {
+                const media = allMedia[i];
+
+                if (media.thumbnailUrl && !media.thumbnailUrl.startsWith('data:')) {
+                    try {
+                        // Check if exists first
+                        const cached = await window.socialDB.getThumbnail(media.thumbnailUrl);
+
+                        // If missing or expired, fetch with rate limit
+                        if (!cached || Date.now() > cached.ttl) {
+                            await fetchAndCache(media.thumbnailUrl, document.createElement('div'), null); // Dummy div
+                            count++;
+
+                            // Wait 200ms to ensure max 5 req/s
+                            await new Promise(r => setTimeout(r, 200));
+                        }
+                    } catch (e) { console.error(e); }
+                }
+
+                // Update progess
+                if (i % 5 === 0 || i === total - 1) {
+                    newBtn.textContent = `Populating... (${i + 1}/${total})`;
+                }
+            }
+
+            newBtn.textContent = 'Populate Cache';
+            newBtn.disabled = false;
+            alert(`Cache population complete. Fetched/Refreshed ${count} thumbnails.`);
+            renderStorageStats();
+        });
+    }
+
+    if (btnClearVal) {
+        const newBtn = btnClearVal.cloneNode(true);
+        btnClearVal.parentNode.replaceChild(newBtn, btnClearVal);
+
+        newBtn.addEventListener('click', async () => {
+            if (confirm('Are you sure you want to clear ALL cached thumbnails? Images will reload from network next time.')) {
+                await window.socialDB.clearStore('thumbnails');
+                renderStorageStats();
+                alert('Thumbnail cache cleared.');
+            }
+        });
+    }
 
     // Render Storage Stats (Async but we don't await to not block UI)
     renderStorageStats();
@@ -163,11 +403,11 @@ let currentPage = 0;
 const PAGE_SIZE = 40;
 let observer = null;
 
-const filterNewOnly = document.getElementById('filter-new-only');
-filterNewOnly.addEventListener('change', () => renderVideos());
+// Removed top-level event listener for filterNewOnly, handled in initUI
 
 function renderVideos(reset = true) {
     const grid = document.getElementById('video-grid');
+    if (!grid) return;
     const statsHeader = document.getElementById('video-stats-header');
 
     if (reset) {
@@ -410,39 +650,11 @@ function setupObserver() {
 }
 
 // Event Delegation for Video Grid
-document.getElementById('video-grid').addEventListener('click', (e) => {
-    if (e.target.classList.contains('btn-download')) {
-        const url = e.target.getAttribute('data-url');
-        if (url) {
-            chrome.runtime.sendMessage({ action: 'DOWNLOAD_MEDIA', payload: { url: url } });
-        }
-    }
-});
+// Moved to initUI (lines 178-188)
 
 // --- EXPORT ---
-// --- EXPORT ---
-const exportPlatform = document.getElementById('export-platform');
-const exportUser = document.getElementById('export-user');
-const exportNewOnly = document.getElementById('export-new-only');
-
-// Initialize Export Settings (Persistence)
-function initExportSettings() {
-    const storedVal = localStorage.getItem('socialScraper_exportNewOnly');
-
-    // Default to true if not set, otherwise parse stored value
-    if (storedVal === null) {
-        exportNewOnly.checked = true;
-    } else {
-        exportNewOnly.checked = storedVal === 'true';
-    }
-
-    // Save on change
-    exportNewOnly.addEventListener('change', () => {
-        localStorage.setItem('socialScraper_exportNewOnly', exportNewOnly.checked);
-        updateLivePreview(); // Existing listener triggers this too, but for clarity
-    });
-}
-initExportSettings();
+// Variables initialized in initUI
+// initExportSettings logic moved to initUI
 
 function getExportData() {
     const pFilter = exportPlatform.value;
@@ -507,13 +719,7 @@ function formatColumnName(col) {
 }
 
 // Event Listeners for Preview
-[exportPlatform, exportUser, exportNewOnly].forEach(el => {
-    el.addEventListener('change', updateLivePreview);
-});
-
-document.querySelectorAll('#column-pills input').forEach(cb => {
-    cb.addEventListener('change', updateLivePreview);
-});
+// Moved to initUI
 
 // Initial Preview Load
 // We need to wait for data load
@@ -550,43 +756,7 @@ function generateExportFilename(extension) {
     return `SocialScraper_${platform}_${user}_${type}_${date}.${extension}`;
 }
 
-document.getElementById('btn-export-txt').addEventListener('click', async () => {
-    const data = getExportData();
-    if (data.length === 0) { alert('No data matches your filters.'); return; }
 
-    const text = data.map(m => m.originalUrl).join('\n');
-    const filename = generateExportFilename('txt');
-    downloadFile(text, filename, 'text/plain');
-
-    await markItemsAsExported(data);
-});
-
-document.getElementById('btn-export-csv').addEventListener('click', async () => {
-    const data = getExportData();
-    if (data.length === 0) { alert('No data matches your filters.'); return; }
-
-    const columns = getSelectedColumns();
-    if (columns.length === 0) { alert('Please select at least one column.'); return; }
-
-    // Header
-    const header = columns.map(c => formatColumnName(c)).join(',') + '\n';
-
-    // Rows
-    const rows = data.map(m => {
-        return columns.map(col => {
-            let val = m[col] || '';
-            if (col === 'scrapedAt') val = new Date(val).toISOString();
-            // Escape CSV injection/commas
-            const str = String(val).replace(/"/g, '""');
-            return `"${str}"`;
-        }).join(',');
-    }).join('\n');
-
-    const filename = generateExportFilename('csv');
-    downloadFile(header + rows, filename, 'text/csv');
-
-    await markItemsAsExported(data);
-});
 
 function downloadFile(content, filename, type) {
     const blob = new Blob([content], { type });
@@ -602,9 +772,7 @@ function downloadFile(content, filename, type) {
 init();
 
 // --- DELETE DATA TAB ---
-const deletePlatform = document.getElementById('delete-platform');
-const deleteUser = document.getElementById('delete-user');
-const deleteCountParams = document.getElementById('delete-count');
+// Variables initialized in initUI
 
 function getDeleteFilterData() {
     const pFilter = deletePlatform.value;
@@ -652,72 +820,4 @@ function updateDeletePreview() {
     }
 }
 
-// Wire up filters
-[deletePlatform, deleteUser].forEach(el => {
-    el.addEventListener('change', updateDeletePreview);
-});
 
-// Populate Delete User Select (when Stats loaded)
-// Modified renderStats to populate delete-user as well (already handled by populate call? check init)
-// Ah, renderStats populated 'export-user', we need to populate 'delete-user' too.
-// We'll hook into renderStats by monkey patching or just adding a listener if possible, 
-// but since renderStats is global scope here, let's just modify the existing populate logic 
-// or overwrite it securely.
-const originalRenderStats = renderStats;
-renderStats = function () {
-    originalRenderStats();
-    // Populate delete user select
-    const userList = [...new Set(allMedia.map(m => m.userId))];
-    const select = document.getElementById('delete-user');
-    const currentValue = select.value;
-
-    select.innerHTML = '<option value="ALL">All Users</option>';
-    userList.forEach(u => {
-        const opt = document.createElement('option');
-        opt.value = u;
-        opt.textContent = u;
-        select.appendChild(opt);
-    });
-    // Restore selection if valid
-    if (userList.includes(currentValue) || currentValue === 'ALL') {
-        select.value = currentValue;
-    }
-}
-
-
-// Delete Action
-document.getElementById('btn-delete-confirm').addEventListener('click', async () => {
-    const data = getDeleteFilterData();
-    if (data.length === 0) {
-        alert('No data to delete.');
-        return;
-    }
-
-    // 1. Snapshot Download
-    const filename = `SNAPSHOT_BEFORE_DELETE_${new Date().toISOString().split('T')[0]}.json`;
-    const jsonContent = JSON.stringify(data, null, 2);
-    downloadFile(jsonContent, filename, 'application/json');
-
-    // 2. Confirmation
-    // Allow small delay for download to start
-    setTimeout(async () => {
-        const confirmed = confirm(`WARNING: You are about to PERMANENTLY delete ${data.length} items.\n\nA snapshot has been downloaded.\n\nAre you sure you want to proceed?`);
-
-        if (confirmed) {
-            try {
-                const keys = data.map(m => m.id);
-                await window.socialDB.deleteBatch('media', keys);
-
-                alert('Deletion successful.');
-
-                // Reload
-                await loadData();
-                updateDeletePreview();
-                // Stay on tab
-            } catch (err) {
-                console.error(err);
-                alert('Error deleting data: ' + err.message);
-            }
-        }
-    }, 500);
-});
