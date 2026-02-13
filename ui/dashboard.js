@@ -125,6 +125,66 @@ function initUI() {
         await markItemsAsExported(data);
     });
 
+    // NEW: Export Users
+    document.getElementById('btn-export-users').addEventListener('click', async () => {
+        // We use the current export filters? Or just export ALL users?
+        // Requirement says: "Export all users already scrapped" and "Export all users already scrapped by platform"
+        // So we should respect the Platform filter, but maybe ignore User filter (since we want list of users).
+        // Let's use getUniqueUsers(platform)
+
+        const pFilter = exportPlatform.value;
+        const users = await window.socialDB.getUniqueUsers(pFilter);
+
+        if (users.length === 0) {
+            alert('No users found.');
+            return;
+        }
+
+        const text = users.join('\n');
+        const filename = `Users_${pFilter === 'ALL' ? 'AllPlatforms' : pFilter}_${new Date().toISOString().split('T')[0]}.txt`;
+        downloadFile(text, filename, 'text/plain');
+    });
+
+    // NEW: Export Thumbnails
+    document.getElementById('btn-export-thumbs').addEventListener('click', async () => {
+        if (!window.showDirectoryPicker) {
+            alert("Browser not supported.");
+            return;
+        }
+
+        const pFilter = exportPlatform.value;
+        const uFilter = exportUser.value;
+        const criteria = { platform: pFilter, userId: uFilter, newOnly: exportNewOnly.checked };
+
+        // Check count
+        const count = await window.socialDB.countMedia(criteria);
+        if (count === 0) { alert('No items match criteria.'); return; }
+
+        const btn = document.getElementById('btn-export-thumbs');
+        const originalText = btn.innerHTML;
+        btn.disabled = true;
+        btn.textContent = 'Select Folder...';
+
+        try {
+            const dirHandle = await window.showDirectoryPicker();
+            btn.textContent = 'Exporting...';
+
+            await backupToFolder(dirHandle, criteria, (processed) => {
+                btn.textContent = `Exporting... ${processed}/${count}`;
+            });
+
+            alert(`Export Complete! Saved to ${dirHandle.name}/images`);
+        } catch (err) {
+            if (err.name !== 'AbortError') {
+                console.error(err);
+                alert("Export failed: " + err.message);
+            }
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = originalText;
+        }
+    });
+
     // Delete Action
     document.getElementById('btn-delete-confirm').addEventListener('click', async () => {
         // 1. Get Count first
@@ -149,105 +209,14 @@ function initUI() {
         btn.disabled = true;
         btn.textContent = 'Waiting for folder selection...';
 
-        let dirHandle;
         try {
-            dirHandle = await window.showDirectoryPicker();
-        } catch (e) {
-            // User cancelled
-            btn.disabled = false;
-            btn.textContent = originalText;
-            return;
-        }
+            const dirHandle = await window.showDirectoryPicker();
+            btn.textContent = 'Initializing Backup...';
 
-        btn.textContent = 'Initializing Backup...';
-
-        try {
-            // Create images directory
-            const imagesHandle = await dirHandle.getDirectoryHandle('images', { create: true });
-
-            // Create data.json file stream
-            const fileHandle = await dirHandle.getFileHandle('data_backup.json', { create: true });
-            const writable = await fileHandle.createWritable();
-            await writable.write('[\n'); // Start JSON array
-
-            // Processing Loop
-            const BATCH_SIZE = 50;
-            let offset = 0;
-            let processed = 0;
-            let hasMore = true;
-            let firstItem = true;
-            const mediaIdsToDelete = [];
-            const thumbnailUrlsToDelete = [];
-
-            while (hasMore) {
-                // Fetch batch
-                // Note: We always fetch offset 0 if we were deleting as we go, BUT
-                // we are backing up FIRST, then deleting. So we need to increment offset.
-                // UNLESS we want to delete batch by batch to save memory on IDs list?
-                // But if backup fails mid-way, we shouldn't have deleted anything.
-                // So we must backup ALL first.
-                // But holding 100k IDs in memory is fine (100k * 20 chars = 2MB).
-                // Holding 100k Media Objects is bad (100k * 1KB = 100MB + overhead).
-                // So we process objects, write to disk, keep IDs.
-
-                const result = await window.socialDB.queryMedia(criteria, offset, BATCH_SIZE);
-                const batch = result.items;
-                hasMore = result.hasMore;
-                offset += BATCH_SIZE;
-
-                if (batch.length === 0) break;
-
-                // Process Batch
-                for (const media of batch) {
-                    // 1. Write to JSON
-                    if (!firstItem) await writable.write(',\n');
-                    await writable.write(JSON.stringify(media, null, 2));
-                    firstItem = false;
-
-                    // 2. Backup Image
-                    if (media.thumbnailUrl && !media.thumbnailUrl.startsWith('data:')) {
-                        try {
-                            const cached = await window.socialDB.getThumbnail(media.thumbnailUrl);
-                            let blob = null;
-                            if (cached && cached.blob) {
-                                blob = cached.blob;
-                            } else {
-                                // Fallback fetch
-                                const resp = await fetch(media.thumbnailUrl);
-                                if (resp.ok) blob = await resp.blob();
-                            }
-
-                            if (blob) {
-                                const ext = blob.type.split('/')[1] || 'jpg';
-                                // Sanitize filename
-                                const safeUserId = media.userId.replace(/[^a-z0-9]/gi, '_');
-                                const safeId = media.id.replace(/[^a-z0-9]/gi, '_');
-                                const filename = `${media.platform}_${safeUserId}_${safeId}.${ext}`;
-
-                                const imgFileHandle = await imagesHandle.getFileHandle(filename, { create: true });
-                                const imgWritable = await imgFileHandle.createWritable();
-                                await imgWritable.write(blob);
-                                await imgWritable.close();
-                            }
-                        } catch (e) {
-                            console.warn('Failed to backup image:', media.thumbnailUrl, e);
-                        }
-
-                        thumbnailUrlsToDelete.push(media.thumbnailUrl);
-                    }
-
-                    mediaIdsToDelete.push(media.id);
-                    processed++;
-
-                    // Update UI every 5 items
-                    if (processed % 5 === 0) {
-                        btn.textContent = `Backing up... ${processed}/${count}`;
-                    }
-                }
-            }
-
-            await writable.write('\n]'); // End JSON array
-            await writable.close();
+            // Reuse backup function
+            const { processed, mediaIds, thumbnailUrls } = await backupToFolder(dirHandle, criteria, (p) => {
+                btn.textContent = `Backing up... ${p}/${count}`;
+            });
 
             // Backup Complete
             btn.textContent = 'Backup Complete. Deleting...';
@@ -258,18 +227,15 @@ function initUI() {
             if (confirmed) {
                 // Delete in batches to avoid locking DB for too long
                 const DELETE_BATCH = 500;
-                for (let i = 0; i < mediaIdsToDelete.length; i += DELETE_BATCH) {
-                    const batchIds = mediaIdsToDelete.slice(i, i + DELETE_BATCH);
+                for (let i = 0; i < mediaIds.length; i += DELETE_BATCH) {
+                    const batchIds = mediaIds.slice(i, i + DELETE_BATCH);
                     await window.socialDB.deleteBatch('media', batchIds);
-                    btn.textContent = `Deleting Media... ${Math.min(i + DELETE_BATCH, mediaIdsToDelete.length)}/${mediaIdsToDelete.length}`;
+                    btn.textContent = `Deleting Media... ${Math.min(i + DELETE_BATCH, mediaIds.length)}/${mediaIds.length}`;
                 }
 
-                // Delete Thumbnails (Only if we are deleting items, we assume thumbnails are associated)
-                // Note: If multiple items share URL, we might delete valid thumbnail.
-                // Ideally we check ref counts. But for now, we follow original logic: delete associated thumbnails.
-                if (thumbnailUrlsToDelete.length > 0) {
-                    // Dedup
-                    const uniqueThumbUrls = [...new Set(thumbnailUrlsToDelete)];
+                // Delete Thumbnails
+                if (thumbnailUrls.length > 0) {
+                    const uniqueThumbUrls = [...new Set(thumbnailUrls)];
                     for (let i = 0; i < uniqueThumbUrls.length; i += DELETE_BATCH) {
                         const batchUrls = uniqueThumbUrls.slice(i, i + DELETE_BATCH);
                         await window.socialDB.deleteBatch('thumbnails', batchUrls);
@@ -278,13 +244,15 @@ function initUI() {
                 }
 
                 alert('Deletion and Cleanup successful.');
-                await loadData();
+                await loadData(); // Reload UI
                 updateDeletePreview();
             }
 
         } catch (err) {
-            console.error("Backup/Delete process failed:", err);
-            alert("Process failed: " + err.message);
+            if (err.name !== 'AbortError') {
+                console.error("Backup/Delete process failed:", err);
+                alert("Process failed: " + err.message);
+            }
         } finally {
             btn.disabled = false;
             btn.textContent = originalText;
@@ -579,6 +547,7 @@ async function renderStorageStats() {
 
         document.getElementById('stat-cache-count').textContent = stats.counts.cachedThumbnails;
         document.getElementById('stat-cache-missing').textContent = stats.counts.videosNotCached;
+        document.getElementById('stat-cache-expired').textContent = stats.counts.expiredThumbnails;
         document.getElementById('stat-cache-invalid').textContent = stats.counts.invalidThumbnails;
 
     } catch (err) {
@@ -1086,6 +1055,96 @@ async function updateDeletePreview() {
         tr.innerHTML = `<td colspan="${columns.length}" style="text-align:center; color:#888;">...and ${count - 10} more items</td>`;
         tbody.appendChild(tr);
     }
+}
+
+async function backupToFolder(dirHandle, criteria, updateProgress) {
+    // Create images directory
+    const imagesHandle = await dirHandle.getDirectoryHandle('images', { create: true });
+
+    // Create data.json file stream
+    const fileHandle = await dirHandle.getFileHandle('data_backup.json', { create: true });
+    const writable = await fileHandle.createWritable();
+    await writable.write('[\n'); // Start JSON array
+
+    // Processing Loop
+    const BATCH_SIZE = 50;
+    let offset = 0;
+    let processed = 0;
+    let hasMore = true;
+    let firstItem = true;
+    const mediaIds = [];
+    const thumbnailUrls = [];
+
+    // Safety check for infinite loop
+    let batchCount = 0;
+    const MAX_BATCHES = 10000; // 500k items max safety
+
+    while (hasMore && batchCount < MAX_BATCHES) {
+        batchCount++;
+        // Fetch batch
+        const result = await window.socialDB.queryMedia(criteria, offset, BATCH_SIZE);
+        const batch = result.items;
+        hasMore = result.hasMore;
+        offset += BATCH_SIZE;
+
+        if (batch.length === 0) break;
+
+        // Process Batch
+        for (const media of batch) {
+            // 1. Write to JSON
+            if (!firstItem) await writable.write(',\n');
+            await writable.write(JSON.stringify(media, null, 2));
+            firstItem = false;
+
+            // 2. Backup Image
+            if (media.thumbnailUrl && !media.thumbnailUrl.startsWith('data:')) {
+                try {
+                    const cached = await window.socialDB.getThumbnail(media.thumbnailUrl);
+                    let blob = null;
+                    if (cached && cached.blob) {
+                        blob = cached.blob;
+                    } else {
+                        // Fallback fetch
+                        const resp = await fetch(media.thumbnailUrl);
+                        if (resp.ok) blob = await resp.blob();
+                    }
+
+                    if (blob) {
+                        let ext = 'jpg';
+                        if (blob.type) {
+                            ext = blob.type.split('/')[1] || 'jpg';
+                        }
+                        // Sanitize filename
+                        const safeUserId = (media.userId || 'unknown').replace(/[^a-z0-9]/gi, '_');
+                        const safeId = (media.id || 'unknown').replace(/[^a-z0-9]/gi, '_');
+                        const filename = `${media.platform}_${safeUserId}_${safeId}.${ext}`;
+
+                        const imgFileHandle = await imagesHandle.getFileHandle(filename, { create: true });
+                        const imgWritable = await imgFileHandle.createWritable();
+                        await imgWritable.write(blob);
+                        await imgWritable.close();
+                    }
+                } catch (e) {
+                    console.warn('Failed to backup image:', media.thumbnailUrl, e);
+                }
+
+                thumbnailUrls.push(media.thumbnailUrl);
+            }
+
+            mediaIds.push(media.id);
+            processed++;
+
+            // Update UI
+            if (processed % 5 === 0 && updateProgress) {
+                updateProgress(processed);
+            }
+        }
+    }
+
+    await writable.write('\n]'); // End JSON array
+    await writable.close();
+
+    return { processed, mediaIds, thumbnailUrls };
 }
 
 

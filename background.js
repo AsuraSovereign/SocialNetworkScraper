@@ -236,3 +236,18 @@ async function handleMessage(request, sender, sendResponse) {
         // console.log("Unknown action:", request.action);
     }
 }
+
+function downloadMedia(payload) {
+    if (!payload || !payload.url) return;
+
+    chrome.downloads.download({
+        url: payload.url,
+        saveAs: false // Download immediately
+    }, (downloadId) => {
+        if (chrome.runtime.lastError) {
+            console.error("Download failed:", chrome.runtime.lastError);
+        } else {
+            console.log("Download started:", downloadId);
+        }
+    });
+}

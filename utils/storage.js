@@ -227,12 +227,14 @@ class StorageUtils {
             let thumbSize = 0;
             let invalidThumbCount = 0;
             let cachedThumbCount = 0;
+            let expiredThumbCount = 0;
             const userUsage = {};
             let totalMediaCount = 0;
 
             // Track unique users
             const uniqueUsers = new Set();
             let lastScrapeTime = 0;
+            const now = Date.now();
 
             // 1. Process Media via Cursor
             const mediaCursorRequest = mediaStore.openCursor();
@@ -278,6 +280,10 @@ class StorageUtils {
                         const t = cursor.value;
                         cachedThumbCount++;
 
+                        if (t.ttl && t.ttl < now) {
+                            expiredThumbCount++;
+                        }
+
                         if (t.blob && t.blob.size) {
                             thumbSize += t.blob.size;
                         } else {
@@ -313,6 +319,7 @@ class StorageUtils {
                         lastScraped: lastScrapeTime,
                         cachedThumbnails: cachedThumbCount,
                         invalidThumbnails: invalidThumbCount,
+                        expiredThumbnails: expiredThumbCount,
                         videosNotCached: Math.max(0, totalMediaCount - cachedThumbCount)
                     }
                 });

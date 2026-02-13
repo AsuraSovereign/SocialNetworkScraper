@@ -71,12 +71,20 @@
                 </label>
             </div>
 
-            <div class="action-buttons">
-                <button id="btn-export-csv" class="btn-primary-large">
+            <div class="action-buttons" style="flex-wrap: wrap;">
+                <button id="btn-export-csv" class="btn-primary-large" style="flex: 1 1 100%;">
                     <span class="icon">⬇</span> Export Data (CSV)
                 </button>
-                <button id="btn-export-txt" class="btn-secondary-outline">
-                    <span class="icon">📄</span> Download TXT List
+                <div style="display: flex; gap: 10px; width: 100%;">
+                    <button id="btn-export-txt" class="btn-secondary-outline" style="flex: 1;">
+                        <span class="icon">📄</span> Export URLs (TXT)
+                    </button>
+                     <button id="btn-export-users" class="btn-secondary-outline" style="flex: 1;">
+                        <span class="icon">👥</span> Export Users
+                    </button>
+                </div>
+                <button id="btn-export-thumbs" class="btn-secondary-outline" style="width: 100%; border-color: #00f2ea; color: #00f2ea;">
+                    <span class="icon">🖼️</span> Export All Thumbnails
                 </button>
             </div>
         </div>
