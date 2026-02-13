@@ -17,6 +17,7 @@ let deletePlatform, deleteUser, deleteCountParams;
 
 // State
 let allMedia = [];
+let cachePopulateBtn = null; // Reference to cache populate button
 
 // Init
 async function init() {
@@ -24,6 +25,7 @@ async function init() {
     initUI();
     setupNavigation();
     setupFilters();
+    setupCacheProgressListener(); // Set up global listener
     loadData();
 }
 
@@ -278,6 +280,38 @@ function setupFilters() {
     if (filterUser) filterUser.addEventListener('change', () => renderVideos());
 }
 
+function setupCacheProgressListener() {
+    // Global listener for cache population progress updates
+    console.log('[Dashboard] Setting up cache progress listener');
+    chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+        if (request.action === "CACHE_PROGRESS_UPDATE") {
+            console.log('[Dashboard] Received CACHE_PROGRESS_UPDATE:', request);
+            const { current, total, complete } = request;
+
+            if (!cachePopulateBtn) {
+                console.warn('[Dashboard] Button not initialized yet, ignoring message');
+                return;
+            }
+
+            if (complete) {
+                console.log('[Dashboard] Cache population complete, resetting button');
+                cachePopulateBtn.textContent = 'Populate Cache';
+                cachePopulateBtn.disabled = false;
+                if (total > 0) {
+                    console.log(`Cache population complete. Processed ${total} items.`);
+                } else {
+                    console.log('Cache is already up to date.');
+                }
+                renderStorageStats();
+            } else {
+                console.log(`[Dashboard] Updating button: ${current}/${total}`);
+                cachePopulateBtn.disabled = true;
+                cachePopulateBtn.textContent = `Populating... (${current}/${total})`;
+            }
+        }
+    });
+}
+
 function setupNavigation() {
     linkStats.addEventListener('click', () => showTab('stats'));
     linkVideos.addEventListener('click', () => showTab('videos'));
@@ -390,49 +424,28 @@ function renderStats() {
 
     if (btnPopulateVal) {
         // Clone to remove old listeners (simple way in this context)
-        const newBtn = btnPopulateVal.cloneNode(true);
-        btnPopulateVal.parentNode.replaceChild(newBtn, btnPopulateVal);
+        cachePopulateBtn = btnPopulateVal.cloneNode(true);
+        btnPopulateVal.parentNode.replaceChild(cachePopulateBtn, btnPopulateVal);
 
-        newBtn.addEventListener('click', () => {
-            newBtn.disabled = true;
-            newBtn.textContent = 'Requesting...';
+        cachePopulateBtn.addEventListener('click', () => {
+            cachePopulateBtn.disabled = true;
+            cachePopulateBtn.textContent = 'Requesting...';
 
             chrome.runtime.sendMessage({ action: "START_CACHE_POPULATION" }, (response) => {
                 if (chrome.runtime.lastError) {
                     console.error(chrome.runtime.lastError);
                     alert("Failed to contact background script. Please check if the extension is running.");
-                    newBtn.disabled = false;
-                    newBtn.textContent = 'Populate Cache';
+                    cachePopulateBtn.disabled = false;
+                    cachePopulateBtn.textContent = 'Populate Cache';
                 } else if (response && response.started) {
-                    newBtn.textContent = 'Background Task Started...';
-                    // The progress listener will take over
+                    cachePopulateBtn.textContent = 'Starting...';
+                    // The global progress listener will take over
                 } else {
                     alert("Cache population failed to start: " + (response ? response.error : 'Unknown error'));
-                    newBtn.disabled = false;
-                    newBtn.textContent = 'Populate Cache';
+                    cachePopulateBtn.disabled = false;
+                    cachePopulateBtn.textContent = 'Populate Cache';
                 }
             });
-        });
-
-        // Listen for progress updates from background
-        chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-            if (request.action === "CACHE_PROGRESS_UPDATE") {
-                const { current, total, complete } = request;
-
-                if (complete) {
-                    newBtn.textContent = 'Populate Cache';
-                    newBtn.disabled = false;
-                    if (total > 0) {
-                        // Only alert if we actually did something
-                        // Use a toast or less intrusive notification if possible, but alert is standard here
-                        // alert(`Background cache population complete. Processed ${total} items.`);
-                    }
-                    renderStorageStats();
-                } else {
-                    newBtn.disabled = true;
-                    newBtn.textContent = `Populating... (${current}/${total})`;
-                }
-            }
         });
     }
 

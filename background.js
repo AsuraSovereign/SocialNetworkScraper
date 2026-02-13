@@ -121,7 +121,8 @@ async function startCachePopulation(silent = false) {
 
         if (total === 0) {
             isPopulating = false;
-            broadcastProgress(0, 0, true); // Complete
+            // Small delay to ensure dashboard listener is registered before broadcasting
+            setTimeout(() => broadcastProgress(0, 0, true), 100);
             return;
         }
 
@@ -182,15 +183,19 @@ async function fetchAndCache(url) {
     }
 }
 
-function broadcastProgress(current, total, complete = false) {
+
+async function broadcastProgress(current, total, complete = false) {
+    console.log(`[Background] Broadcasting progress: ${current}/${total}, complete: ${complete}`);
     try {
-        chrome.runtime.sendMessage({
+        await chrome.runtime.sendMessage({
             action: "CACHE_PROGRESS_UPDATE",
             current,
             total,
             complete
-        }).catch(() => {
-            // Ignore error if no listeners (e.g. dashboard closed)
         });
-    } catch (e) { /* safe */ }
+        console.log(`[Background] Progress message sent successfully`);
+    } catch (e) {
+        // This is expected if dashboard is closed
+        console.log(`[Background] No listeners for progress update (dashboard may be closed)`);
+    }
 }
