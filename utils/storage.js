@@ -209,6 +209,9 @@ class StorageUtils {
     /**
      * Metrics Calculation
      */
+    /**
+     * Metrics Calculation (Cursor-based / Memory Efficient)
+     */
     async getStorageUsage() {
         await this.init();
 
@@ -227,32 +230,49 @@ class StorageUtils {
             const userUsage = {};
             let totalMediaCount = 0;
 
-            // 1. Process Media (getAll is fine for metadata)
-            const mediaRequest = mediaStore.getAll();
+            // Track unique users
+            const uniqueUsers = new Set();
+            let lastScrapeTime = 0;
 
-            mediaRequest.onsuccess = () => {
-                const media = mediaRequest.result;
-                totalMediaCount = media.length;
+            // 1. Process Media via Cursor
+            const mediaCursorRequest = mediaStore.openCursor();
 
-                media.forEach(m => {
-                    const size = getSize(m);
-                    mediaSize += size;
+            mediaCursorRequest.onsuccess = (e) => {
+                const cursor = e.target.result;
+                if (cursor) {
+                    const m = cursor.value;
+                    totalMediaCount++;
 
-                    // User Usage
+                    // Stats
                     if (m.userId) {
+                        uniqueUsers.add(m.userId);
+                        const size = getSize(m);
+                        mediaSize += size;
                         userUsage[m.userId] = (userUsage[m.userId] || 0) + size;
+                    }
+
+                    if (m.scrapedAt && m.scrapedAt > lastScrapeTime) {
+                        lastScrapeTime = m.scrapedAt;
                     }
 
                     // Invalid Thumbnail Check
                     if (!m.thumbnailUrl || m.thumbnailUrl.startsWith('data:')) {
                         invalidThumbCount++;
                     }
-                });
 
-                // 2. Process Thumbnails via Cursor (Memory Safe)
-                const thumbCursor = thumbStore.openCursor();
+                    cursor.continue();
+                } else {
+                    // Media done, process thumbnails
+                    processThumbnails();
+                }
+            };
 
-                thumbCursor.onsuccess = (e) => {
+            mediaCursorRequest.onerror = () => reject(mediaCursorRequest.error);
+
+            function processThumbnails() {
+                const thumbCursorRequest = thumbStore.openCursor();
+
+                thumbCursorRequest.onsuccess = (e) => {
                     const cursor = e.target.result;
                     if (cursor) {
                         const t = cursor.value;
@@ -271,10 +291,8 @@ class StorageUtils {
                     }
                 };
 
-                thumbCursor.onerror = () => reject(thumbCursor.error);
-            };
-
-            mediaRequest.onerror = () => reject(mediaRequest.error);
+                thumbCursorRequest.onerror = () => reject(thumbCursorRequest.error);
+            }
 
             function finalize() {
                 // Top User
@@ -291,12 +309,147 @@ class StorageUtils {
                     topUser: topUser,
                     counts: {
                         totalVideos: totalMediaCount,
+                        totalUsers: uniqueUsers.size,
+                        lastScraped: lastScrapeTime,
                         cachedThumbnails: cachedThumbCount,
                         invalidThumbnails: invalidThumbCount,
                         videosNotCached: Math.max(0, totalMediaCount - cachedThumbCount)
                     }
                 });
             }
+        });
+    }
+
+    /**
+     * Query Media Items (Paginated / Filtered)
+     * Criteria: { platform, userId, newOnly }
+     */
+    async queryMedia(criteria = {}, offset = 0, limit = 50) {
+        await this.init();
+        return new Promise((resolve, reject) => {
+            const transaction = this.db.transaction(['media'], 'readonly');
+            const store = transaction.objectStore('media');
+
+            let request;
+            let indexName = null;
+
+            // Optimization: Use Index if possible
+            if (criteria.platform && criteria.platform !== 'ALL') {
+                request = store.index('platform').openCursor(IDBKeyRange.only(criteria.platform));
+                indexName = 'platform';
+            } else if (criteria.userId && criteria.userId !== 'ALL') {
+                request = store.index('userId').openCursor(IDBKeyRange.only(criteria.userId));
+                indexName = 'userId';
+            } else {
+                request = store.openCursor(); // Full scan
+            }
+
+            const results = [];
+            let skipped = 0;
+            let hasMore = false;
+
+            request.onsuccess = (e) => {
+                const cursor = e.target.result;
+                if (cursor) {
+                    const m = cursor.value;
+
+                    // Filter Logic
+                    let match = true;
+
+                    // If we didn't use an index for these, check them manually
+                    if (criteria.platform && criteria.platform !== 'ALL' && indexName !== 'platform') {
+                        if (m.platform !== criteria.platform) match = false;
+                    }
+                    if (criteria.userId && criteria.userId !== 'ALL' && indexName !== 'userId') {
+                        if (m.userId !== criteria.userId) match = false;
+                    }
+
+                    // 'New' means NOT exported
+                    if (match && criteria.newOnly) {
+                        if (m.exported === true) match = false;
+                    }
+
+                    if (match) {
+                        if (skipped < offset) {
+                            skipped++;
+                        } else {
+                            if (results.length < limit) {
+                                results.push(m);
+                            } else {
+                                hasMore = true;
+                                resolve({ items: results, hasMore: true });
+                                return; // Stop iterating
+                            }
+                        }
+                    }
+
+                    cursor.continue();
+                } else {
+                    // End of store
+                    resolve({ items: results, hasMore: false });
+                }
+            };
+
+            request.onerror = () => reject(request.error);
+        });
+    }
+
+    /**
+     * Get list of unique users (for filters)
+     */
+    async getUniqueUsers(platform = null) {
+        await this.init();
+        return new Promise((resolve, reject) => {
+            const transaction = this.db.transaction(['media'], 'readonly');
+            const store = transaction.objectStore('media');
+            const users = new Set();
+
+            const request = store.openCursor();
+            request.onsuccess = (e) => {
+                const cursor = e.target.result;
+                if (cursor) {
+                    const m = cursor.value;
+                    if (m.userId) {
+                        if (!platform || platform === 'ALL' || m.platform === platform) {
+                            users.add(m.userId);
+                        }
+                    }
+                    cursor.continue();
+                } else {
+                    resolve(Array.from(users).sort());
+                }
+            };
+            request.onerror = () => reject(request.error);
+        });
+    }
+
+    /**
+     * Count items matching criteria
+     */
+    async countMedia(criteria = {}) {
+        await this.init();
+        return new Promise((resolve, reject) => {
+            const transaction = this.db.transaction(['media'], 'readonly');
+            const store = transaction.objectStore('media');
+            let count = 0;
+
+            const request = store.openCursor();
+            request.onsuccess = (e) => {
+                const cursor = e.target.result;
+                if (cursor) {
+                    const m = cursor.value;
+                    let match = true;
+                    if (criteria.platform && criteria.platform !== 'ALL' && m.platform !== criteria.platform) match = false;
+                    if (criteria.userId && criteria.userId !== 'ALL' && m.userId !== criteria.userId) match = false;
+                    if (criteria.newOnly && m.exported) match = false;
+
+                    if (match) count++;
+                    cursor.continue();
+                } else {
+                    resolve(count);
+                }
+            };
+            request.onerror = () => reject(request.error);
         });
     }
 }

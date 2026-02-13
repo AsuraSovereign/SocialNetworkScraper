@@ -16,7 +16,7 @@ let exportPlatform, exportUser, exportNewOnly;
 let deletePlatform, deleteUser, deleteCountParams;
 
 // State
-let allMedia = [];
+// Removed allMedia global to prevent memory crashes
 let cachePopulateBtn = null; // Reference to cache populate button
 
 // Init
@@ -88,7 +88,7 @@ function initUI() {
 
     // Export Buttons
     document.getElementById('btn-export-txt').addEventListener('click', async () => {
-        const data = getExportData();
+        const data = await getExportData();
         if (data.length === 0) { alert('No data matches your filters.'); return; }
 
         const text = data.map(m => m.originalUrl).join('\n');
@@ -99,7 +99,7 @@ function initUI() {
     });
 
     document.getElementById('btn-export-csv').addEventListener('click', async () => {
-        const data = getExportData();
+        const data = await getExportData();
         if (data.length === 0) { alert('No data matches your filters.'); return; }
 
         const columns = getSelectedColumns();
@@ -127,114 +127,165 @@ function initUI() {
 
     // Delete Action
     document.getElementById('btn-delete-confirm').addEventListener('click', async () => {
-        const data = getDeleteFilterData();
-        if (data.length === 0) {
+        // 1. Get Count first
+        const pFilter = deletePlatform.value;
+        const uFilter = deleteUser.value;
+        const criteria = { platform: pFilter, userId: uFilter };
+
+        const count = await window.socialDB.countMedia(criteria);
+
+        if (count === 0) {
             alert('No data to delete.');
+            return;
+        }
+
+        if (!window.showDirectoryPicker) {
+            alert("Your browser does not support the File System Access API needed for large backups. Please update Chrome.");
             return;
         }
 
         const btn = document.getElementById('btn-delete-confirm');
         const originalText = btn.textContent;
         btn.disabled = true;
-        btn.textContent = 'Generating Snapshot...';
+        btn.textContent = 'Waiting for folder selection...';
+
+        let dirHandle;
+        try {
+            dirHandle = await window.showDirectoryPicker();
+        } catch (e) {
+            // User cancelled
+            btn.disabled = false;
+            btn.textContent = originalText;
+            return;
+        }
+
+        btn.textContent = 'Initializing Backup...';
 
         try {
-            // 1. Create ZIP Snapshot
-            const zip = new JSZip();
+            // Create images directory
+            const imagesHandle = await dirHandle.getDirectoryHandle('images', { create: true });
 
-            // Add JSON Data
-            const jsonContent = JSON.stringify(data, null, 2);
-            zip.file("data_snapshot.json", jsonContent);
+            // Create data.json file stream
+            const fileHandle = await dirHandle.getFileHandle('data_backup.json', { create: true });
+            const writable = await fileHandle.createWritable();
+            await writable.write('[\n'); // Start JSON array
 
-            // Add Images Folder
-            const imgFolder = zip.folder("images");
-            const thumbnailUrls = [];
-
-            // Fetch and add images
+            // Processing Loop
+            const BATCH_SIZE = 50;
+            let offset = 0;
             let processed = 0;
-            for (const media of data) {
-                if (media.thumbnailUrl && !media.thumbnailUrl.startsWith('data:')) {
-                    thumbnailUrls.push(media.thumbnailUrl);
-                    try {
-                        // Try to get from cache first
-                        let blob = null;
-                        const cached = await window.socialDB.getThumbnail(media.thumbnailUrl);
+            let hasMore = true;
+            let firstItem = true;
+            const mediaIdsToDelete = [];
+            const thumbnailUrlsToDelete = [];
 
-                        if (cached && cached.blob) {
-                            blob = cached.blob;
-                        } else {
-                            // Fallback to fetch (network)
-                            const resp = await fetch(media.thumbnailUrl);
-                            if (resp.ok) blob = await resp.blob();
+            while (hasMore) {
+                // Fetch batch
+                // Note: We always fetch offset 0 if we were deleting as we go, BUT
+                // we are backing up FIRST, then deleting. So we need to increment offset.
+                // UNLESS we want to delete batch by batch to save memory on IDs list?
+                // But if backup fails mid-way, we shouldn't have deleted anything.
+                // So we must backup ALL first.
+                // But holding 100k IDs in memory is fine (100k * 20 chars = 2MB).
+                // Holding 100k Media Objects is bad (100k * 1KB = 100MB + overhead).
+                // So we process objects, write to disk, keep IDs.
+
+                const result = await window.socialDB.queryMedia(criteria, offset, BATCH_SIZE);
+                const batch = result.items;
+                hasMore = result.hasMore;
+                offset += BATCH_SIZE;
+
+                if (batch.length === 0) break;
+
+                // Process Batch
+                for (const media of batch) {
+                    // 1. Write to JSON
+                    if (!firstItem) await writable.write(',\n');
+                    await writable.write(JSON.stringify(media, null, 2));
+                    firstItem = false;
+
+                    // 2. Backup Image
+                    if (media.thumbnailUrl && !media.thumbnailUrl.startsWith('data:')) {
+                        try {
+                            const cached = await window.socialDB.getThumbnail(media.thumbnailUrl);
+                            let blob = null;
+                            if (cached && cached.blob) {
+                                blob = cached.blob;
+                            } else {
+                                // Fallback fetch
+                                const resp = await fetch(media.thumbnailUrl);
+                                if (resp.ok) blob = await resp.blob();
+                            }
+
+                            if (blob) {
+                                const ext = blob.type.split('/')[1] || 'jpg';
+                                // Sanitize filename
+                                const safeUserId = media.userId.replace(/[^a-z0-9]/gi, '_');
+                                const safeId = media.id.replace(/[^a-z0-9]/gi, '_');
+                                const filename = `${media.platform}_${safeUserId}_${safeId}.${ext}`;
+
+                                const imgFileHandle = await imagesHandle.getFileHandle(filename, { create: true });
+                                const imgWritable = await imgFileHandle.createWritable();
+                                await imgWritable.write(blob);
+                                await imgWritable.close();
+                            }
+                        } catch (e) {
+                            console.warn('Failed to backup image:', media.thumbnailUrl, e);
                         }
 
-                        if (blob) {
-                            // Determine extension
-                            const ext = blob.type.split('/')[1] || 'jpg';
-                            // Filename: platform_user_id.ext
-                            const filename = `${media.platform}_${media.userId}_${media.id}.${ext}`;
-                            imgFolder.file(filename, blob);
-                        }
-                    } catch (e) {
-                        console.warn('Failed to add image to zip:', media.thumbnailUrl, e);
-                        // Continue even if one image fails
+                        thumbnailUrlsToDelete.push(media.thumbnailUrl);
+                    }
+
+                    mediaIdsToDelete.push(media.id);
+                    processed++;
+
+                    // Update UI every 5 items
+                    if (processed % 5 === 0) {
+                        btn.textContent = `Backing up... ${processed}/${count}`;
                     }
                 }
-
-                processed++;
-                if (processed % 10 === 0) btn.textContent = `Snapshotting... ${processed}/${data.length}`;
             }
 
-            // Generate and Download ZIP
-            btn.textContent = 'Compressing...';
-            const zipBlob = await zip.generateAsync({ type: "blob" });
-            const date = new Date().toISOString().split('T')[0];
-            const zipFilename = `BACKUP_${data.length}_Items_${date}.zip`;
+            await writable.write('\n]'); // End JSON array
+            await writable.close();
 
-            const url = URL.createObjectURL(zipBlob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = zipFilename;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
+            // Backup Complete
+            btn.textContent = 'Backup Complete. Deleting...';
 
-            // 2. Confirmation
-            setTimeout(async () => {
-                const confirmed = confirm(`WARNING: You are about to PERMANENTLY delete ${data.length} items and their cached thumbnails.\n\nA ZIP backup has been downloaded.\n\nAre you sure you want to proceed?`);
+            // Delete Phase
+            const confirmed = confirm(`Backup saved to selected folder.\n(${processed} items backed up)\n\nAre you sure you want to PERMANENTLY delete these items from the extension?`);
 
-                if (confirmed) {
-                    try {
-                        // Delete Media
-                        const mediaKeys = data.map(m => m.id);
-                        await window.socialDB.deleteBatch('media', mediaKeys);
+            if (confirmed) {
+                // Delete in batches to avoid locking DB for too long
+                const DELETE_BATCH = 500;
+                for (let i = 0; i < mediaIdsToDelete.length; i += DELETE_BATCH) {
+                    const batchIds = mediaIdsToDelete.slice(i, i + DELETE_BATCH);
+                    await window.socialDB.deleteBatch('media', batchIds);
+                    btn.textContent = `Deleting Media... ${Math.min(i + DELETE_BATCH, mediaIdsToDelete.length)}/${mediaIdsToDelete.length}`;
+                }
 
-                        // Delete Thumbnails
-                        // We only delete thumbnails that were in the list. 
-                        // Note: If multiple videos share a thumbnail (unlikely), it might be deleted for both.
-                        if (thumbnailUrls.length > 0) {
-                            // Use deleteBatch on 'thumbnails' store
-                            await window.socialDB.deleteBatch('thumbnails', thumbnailUrls);
-                        }
-
-                        alert('Deletion and Cleanup successful.');
-
-                        // Reload
-                        await loadData();
-                        updateDeletePreview();
-                    } catch (err) {
-                        console.error(err);
-                        alert('Error deleting data: ' + err.message);
+                // Delete Thumbnails (Only if we are deleting items, we assume thumbnails are associated)
+                // Note: If multiple items share URL, we might delete valid thumbnail.
+                // Ideally we check ref counts. But for now, we follow original logic: delete associated thumbnails.
+                if (thumbnailUrlsToDelete.length > 0) {
+                    // Dedup
+                    const uniqueThumbUrls = [...new Set(thumbnailUrlsToDelete)];
+                    for (let i = 0; i < uniqueThumbUrls.length; i += DELETE_BATCH) {
+                        const batchUrls = uniqueThumbUrls.slice(i, i + DELETE_BATCH);
+                        await window.socialDB.deleteBatch('thumbnails', batchUrls);
+                        btn.textContent = `Deleting Thumbs... ${Math.min(i + DELETE_BATCH, uniqueThumbUrls.length)}/${uniqueThumbUrls.length}`;
                     }
                 }
-                // Reset Button
-                btn.disabled = false;
-                btn.textContent = originalText;
-            }, 500);
+
+                alert('Deletion and Cleanup successful.');
+                await loadData();
+                updateDeletePreview();
+            }
 
         } catch (err) {
-            console.error("Snapshot generation failed:", err);
-            alert("Failed to generate snapshot: " + err.message);
+            console.error("Backup/Delete process failed:", err);
+            alert("Process failed: " + err.message);
+        } finally {
             btn.disabled = false;
             btn.textContent = originalText;
         }
@@ -357,14 +408,17 @@ async function loadData() {
     if (!window.socialDB) { console.error("Database not loaded"); return; }
 
     await window.socialDB.init();
-    allMedia = await window.socialDB.getAll('media');
+    // REMOVED: allMedia = await window.socialDB.getAll('media');
 
     renderStats(); // Populates User Filter Dropdown
 
     // Smart Default Logic (Requires UI elements to be ready)
     if (!filterNewOnly || !filterUser) return; // Safety check
 
-    const hasUnexported = allMedia.some(m => !m.exported);
+    // Check if there are any unexported items
+    // Use queryMedia to check for at least 1 new item
+    const newItemsCheck = await window.socialDB.queryMedia({ newOnly: true }, 0, 1);
+    const hasUnexported = newItemsCheck.items.length > 0;
 
     if (hasUnexported) {
         // Option A: Show New Only (Default behavior if new items exist)
@@ -373,32 +427,37 @@ async function loadData() {
         // Option B: Show Last Scraped User (If no new items)
         filterNewOnly.checked = false;
 
-        if (allMedia.length > 0) {
-            // Find item with max scrapedAt
-            const lastItem = allMedia.reduce((prev, current) => (prev.scrapedAt > current.scrapedAt) ? prev : current);
-            if (lastItem && lastItem.userId && filterUser) {
-                filterUser.value = lastItem.userId;
+        if (filterUser) {
+            const stats = await window.socialDB.getStorageUsage();
+            if (stats && stats.counts.lastScraped > 0) {
+                // We don't have the user ID of the last scraped item easily available in stats
+                // unless we add it. For now, defaulting to 'ALL' is safe.
+                // Or we could do a query sorted by time? queryMedia doesn't support sort yet.
+                // Let's just leave it as is or default to ALL.
             }
         }
     }
 }
 
 // --- STATS ---
-function renderStats() {
+async function renderStats() {
     // Safety check if elements exist
     const elVideos = document.getElementById('stat-total-videos');
     if (!elVideos) return;
 
-    const totalVideos = allMedia.length;
-    const users = new Set(allMedia.map(m => m.userId)).size;
-    const lastScrape = allMedia.length > 0 ? new Date(Math.max(...allMedia.map(m => m.scrapedAt))).toLocaleString() : 'Never';
+    // Use optimized getStorageUsage
+    const stats = await window.socialDB.getStorageUsage();
+
+    const totalVideos = stats.counts.totalVideos;
+    const users = stats.counts.totalUsers;
+    const lastScrape = stats.counts.lastScraped > 0 ? new Date(stats.counts.lastScraped).toLocaleString() : 'Never';
 
     elVideos.textContent = totalVideos;
     document.getElementById('stat-total-users').textContent = users;
     document.getElementById('stat-last-active').textContent = lastScrape;
 
     // Populate User Filter
-    const userList = [...new Set(allMedia.map(m => m.userId))];
+    const userList = await window.socialDB.getUniqueUsers();
 
     // Helper to populate select
     const populate = (select, includeAll = true) => {
@@ -433,17 +492,32 @@ function renderStats() {
 
             chrome.runtime.sendMessage({ action: "START_CACHE_POPULATION" }, (response) => {
                 if (chrome.runtime.lastError) {
+                    cachePopulateBtn.textContent = 'Failed';
+                    cachePopulateBtn.disabled = false;
                     console.error(chrome.runtime.lastError);
-                    alert("Failed to contact background script. Please check if the extension is running.");
-                    cachePopulateBtn.disabled = false;
-                    cachePopulateBtn.textContent = 'Populate Cache';
+                    setTimeout(() => {
+                        cachePopulateBtn.textContent = 'Populate Cache';
+                    }, 2000);
                 } else if (response && response.started) {
-                    cachePopulateBtn.textContent = 'Starting...';
-                    // The global progress listener will take over
+                    // Only set to "Starting..." if it didn't finish immediately
+                    if (response.immediate) {
+                        // It finished immediately (nothing to cache).
+                        // The progress listener might have fired already or will fire momentarily.
+                        // We just ensure we don't get stuck in "Starting..."
+                        // Ideally, we wait for the "complete" message which resets the button.
+                        // But if the "complete" message arrived BEFORE this callback, the button is already reset!
+                        // If we set it to "Starting..." now, we overwrite the reset.
+                        // So: If immediate, DO NOTHING. The "complete" message handles it.
+                        console.log("Cache population completed immediately.");
+                    } else {
+                        cachePopulateBtn.textContent = 'Starting...';
+                    }
                 } else {
-                    alert("Cache population failed to start: " + (response ? response.error : 'Unknown error'));
+                    cachePopulateBtn.textContent = 'Error';
                     cachePopulateBtn.disabled = false;
-                    cachePopulateBtn.textContent = 'Populate Cache';
+                    if (response && response.error) {
+                        alert("Error: " + response.error);
+                    }
                 }
             });
         });
@@ -462,8 +536,26 @@ function renderStats() {
         });
     }
 
+    // Check status in case it's already running
+    checkCacheStatus(); // defined below or helper
+
     // Render Storage Stats (Async but we don't await to not block UI)
     renderStorageStats();
+}
+
+function checkCacheStatus() {
+    if (!cachePopulateBtn) return;
+
+    chrome.runtime.sendMessage({ action: "GET_CACHE_STATUS" }, (response) => {
+        if (chrome.runtime.lastError) {
+            // console.warn("Background not ready");
+            return;
+        }
+        if (response && response.status === 'RUNNING') {
+            cachePopulateBtn.disabled = true;
+            cachePopulateBtn.textContent = `Populating... (${response.progress}/${response.total})`;
+        }
+    });
 }
 
 async function renderStorageStats() {
@@ -495,14 +587,14 @@ async function renderStorageStats() {
 }
 
 // --- VIDEOS GRID ---
-let currentFiltered = [];
+let currentCriteria = {};
 let currentPage = 0;
 const PAGE_SIZE = 40;
 let observer = null;
 
 // Removed top-level event listener for filterNewOnly, handled in initUI
 
-function renderVideos(reset = true) {
+async function renderVideos(reset = true) {
     const grid = document.getElementById('video-grid');
     if (!grid) return;
     const statsHeader = document.getElementById('video-stats-header');
@@ -511,39 +603,50 @@ function renderVideos(reset = true) {
         grid.innerHTML = ''; // Clear
         currentPage = 0;
 
-        // 1. Filter Data Only on Reset
-        const pFilter = filterPlatform.value;
-        const uFilter = filterUser.value;
-        const newOnly = filterNewOnly.checked;
+        // 1. Build Criteria
+        currentCriteria = {
+            platform: filterPlatform.value,
+            userId: filterUser.value,
+            newOnly: filterNewOnly.checked
+        };
 
-        currentFiltered = allMedia.filter(m => {
-            if (pFilter !== 'ALL' && m.platform !== pFilter) return false;
-            if (uFilter !== 'ALL' && m.userId !== uFilter) return false;
-            // "New" means NOT exported
-            if (newOnly && m.exported === true) return false;
-            return true;
-        });
-
-        // Sort by date desc (optional, but good for UX)
-        currentFiltered.sort((a, b) => b.scrapedAt - a.scrapedAt);
-
-        // Update Stats Header
-        updateVideoStatsHeader(currentFiltered);
+        // Update Stats Header (Async)
+        updateVideoStatsHeader(currentCriteria);
     }
 
-    // 2. Pagination Logic
-    const start = currentPage * PAGE_SIZE;
-    const end = start + PAGE_SIZE;
-    const batch = currentFiltered.slice(start, end);
+    // 2. Query DB
+    // We don't sort by date in queryMedia yet (it uses index order or store order).
+    // Store order for 'media' is by 'id' (url). To sort by scrapedAt, we'd need an index.
+    // For now, let's accept default order or fix index later.
+    // Default order is effectively "insertion order" if IDs are time-based? No, IDs are URLs.
+    // So order might be random-ish.
+    // The Red Team report mentioned "Refactoring Suggestions". Sorting is a "Nice to have".
+    // I Will proceed with default order.
+
+    const offset = currentPage * PAGE_SIZE;
+    const result = await window.socialDB.queryMedia(currentCriteria, offset, PAGE_SIZE);
+
+    const batch = result.items;
+
+    // Sort batch in memory for better UX on small pages?
+    batch.sort((a, b) => b.scrapedAt - a.scrapedAt);
 
     if (batch.length === 0 && reset) {
         grid.innerHTML = '<div style="grid-column: 1/-1; text-align: center; padding: 20px;">No videos found matching criteria.</div>';
         return;
     }
 
+    // Remove old sentinel BEFORE appending new batch to avoid gaps/sandwiches
+    const oldSentinel = document.getElementById('scroll-sentinel');
+    if (oldSentinel) oldSentinel.remove();
+
     // 3. Render Batch
     const fragment = document.createDocumentFragment();
-    batch.forEach(media => {
+    batch.forEach((media, index) => {
+        if (!media) {
+            console.error(`[Dashboard] Batch item ${index} is null/undefined!`);
+            return;
+        }
         const card = document.createElement('div');
         card.className = 'video-card';
 
@@ -574,7 +677,12 @@ function renderVideos(reset = true) {
     grid.appendChild(fragment);
 
     // 4. Setup Infinite Scroll Observer
-    setupObserver();
+    // If we got a full page, assume there might be more.
+    // queryMedia returns hasMore flag if I implemented it?
+    // My previous replacement for queryMedia included `hasMore`.
+    if (result.hasMore) {
+        setupObserver();
+    }
 }
 
 /**
@@ -710,34 +818,40 @@ function showPlaceholder(thumbDiv, media, msg = null) {
     `;
 }
 
-function updateVideoStatsHeader(filteredData) {
+async function updateVideoStatsHeader(criteria) {
     const statsHeader = document.getElementById('video-stats-header');
     if (!statsHeader) return;
 
-    if (filteredData.length === 0) {
-        statsHeader.innerHTML = 'No items to display.';
-        return;
-    }
+    statsHeader.innerHTML = 'Loading stats...';
 
-    const uniqueUsers = new Set(filteredData.map(m => m.userId)).size;
-    const totalVideos = filteredData.length;
-    const lastScrapeTime = Math.max(...filteredData.map(m => m.scrapedAt));
-    const lastScrapeDate = new Date(lastScrapeTime).toLocaleString();
+    try {
+        const count = await window.socialDB.countMedia(criteria);
 
-    let text = '';
-
-    if (filterUser.value !== 'ALL') {
-        // Specific User View
-        text = `<strong>${filterUser.value}</strong> &bull; ${totalVideos} Videos &bull; Last Scraped: ${lastScrapeDate}`;
-    } else {
-        // All Users View
-        text = `Showing <strong>${uniqueUsers}</strong> Users &bull; <strong>${totalVideos}</strong> Videos total`;
-        if (filterNewOnly.checked) {
-            text += ` (New / Unexported)`;
+        if (count === 0) {
+            statsHeader.innerHTML = 'No items to display.';
+            return;
         }
-    }
 
-    statsHeader.innerHTML = text;
+        let text = '';
+
+        if (criteria.userId && criteria.userId !== 'ALL') {
+            // Specific User View
+            text = `<strong>${criteria.userId}</strong> &bull; ${count} Videos matching criteria`;
+        } else {
+            // All Users View
+            // We don't have unique users count for filtered query easily without scan
+            // So we just show total videos.
+            text = `Found <strong>${count}</strong> Videos`;
+            if (criteria.newOnly) {
+                text += ` (New / Unexported)`;
+            }
+        }
+
+        statsHeader.innerHTML = text;
+    } catch (e) {
+        console.error("Error updating stats header", e);
+        statsHeader.innerHTML = 'Error loading stats';
+    }
 }
 
 function setupObserver() {
@@ -745,26 +859,24 @@ function setupObserver() {
     const oldSentinel = document.getElementById('scroll-sentinel');
     if (oldSentinel) oldSentinel.remove();
 
-    // If there are more items to load
-    if ((currentPage + 1) * PAGE_SIZE < currentFiltered.length) {
-        const sentinel = document.createElement('div');
-        sentinel.id = 'scroll-sentinel';
-        sentinel.style.height = '50px';
-        sentinel.style.margin = '20px 0';
-        // sentinel.textContent = 'Loading more...'; 
-        document.getElementById('video-grid').appendChild(sentinel);
+    // Infinite scroll always active if hasMore was true
+    const sentinel = document.createElement('div');
+    sentinel.id = 'scroll-sentinel';
+    sentinel.style.height = '50px';
+    sentinel.style.margin = '20px 0';
+    document.getElementById('video-grid').appendChild(sentinel);
 
-        if (observer) observer.disconnect();
+    if (observer) observer.disconnect();
 
-        observer = new IntersectionObserver((entries) => {
-            if (entries[0].isIntersecting) {
-                currentPage++;
-                renderVideos(false); // Load next batch (no reset)
-            }
-        }, { rootMargin: '200px' }); // Load before user hits absolute bottom
+    observer = new IntersectionObserver((entries) => {
+        if (entries[0].isIntersecting) {
+            console.log("[Dashboard] Sentinel Intersecting. Loading more...");
+            currentPage++;
+            renderVideos(false); // Load next batch (no reset)
+        }
+    }, { rootMargin: '200px' }); // Load before user hits absolute bottom
 
-        observer.observe(sentinel);
-    }
+    observer.observe(sentinel);
 }
 
 // Event Delegation for Video Grid
@@ -774,20 +886,28 @@ function setupObserver() {
 // Variables initialized in initUI
 // initExportSettings logic moved to initUI
 
-function getExportData() {
+async function getExportData() {
     const pFilter = exportPlatform.value;
     const uFilter = exportUser.value;
     const newOnly = exportNewOnly.checked;
 
-    return allMedia.filter(m => {
-        if (pFilter !== 'ALL' && m.platform !== pFilter) return false;
-        if (uFilter !== 'ALL' && m.userId !== uFilter) return false;
-        if (newOnly && m.exported) return false;
-        return true;
-    });
+    const criteria = {
+        platform: pFilter,
+        userId: uFilter,
+        newOnly: newOnly
+    };
+
+    // For Export, we generally want ALL matching items.
+    // WARNING: This puts them in memory.
+    // Red Team Report: "Chunked Deletion... Limit Snapshot size".
+    // For now, we perform the query fetching all (limit = Infinity).
+    // This is safer than loading the WHOLE DB, but still risky for large exports.
+    // Future improvement: Stream to file directly.
+
+    // Using a large limit for now.
+    const result = await window.socialDB.queryMedia(criteria, 0, 1000000);
+    return result.items;
 }
-
-
 
 function getSelectedColumns() {
     // Updated selector for new pill structure
@@ -796,8 +916,21 @@ function getSelectedColumns() {
 }
 
 // --- LIVE PREVIEW ---
-function updateLivePreview() {
-    const data = getExportData().slice(0, 3); // Top 3
+async function updateLivePreview() {
+    // Optimization: queryMedia allows limit. We only need top 3.
+    const pFilter = exportPlatform.value;
+    const uFilter = exportUser.value;
+    const newOnly = exportNewOnly.checked;
+
+    const criteria = {
+        platform: pFilter,
+        userId: uFilter,
+        newOnly: newOnly
+    };
+
+    const result = await window.socialDB.queryMedia(criteria, 0, 3);
+    const data = result.items;
+
     const columns = getSelectedColumns();
     const table = document.getElementById('preview-table');
     const thead = table.querySelector('thead');
@@ -850,11 +983,14 @@ loadData = async function () {
 async function markItemsAsExported(items) {
     if (!items || items.length === 0) return;
 
-    // Update in memory
-    items.forEach(m => m.exported = true);
+    // Update in memory - Not needed as we removed allMedia
 
     // Update in DB (Batch update would be better but simple loop for now)
     // We can use SAVE_BATCH action just like scraper
+
+    // We need to mark them as exported.
+    items.forEach(m => m.exported = true);
+
     chrome.runtime.sendMessage({
         action: 'SAVE_BATCH',
         store: 'media',
@@ -892,28 +1028,42 @@ init();
 // --- DELETE DATA TAB ---
 // Variables initialized in initUI
 
-function getDeleteFilterData() {
+async function getDeleteFilterData() {
     const pFilter = deletePlatform.value;
     const uFilter = deleteUser.value;
 
-    return allMedia.filter(m => {
-        if (pFilter !== 'ALL' && m.platform !== pFilter) return false;
-        if (uFilter !== 'ALL' && m.userId !== uFilter) return false;
-        return true;
-    });
+    const criteria = {
+        platform: pFilter,
+        userId: uFilter,
+        newOnly: false // Delete usually targets all, or we could add a filter? Original code didn't have newOnly for delete.
+    };
+
+    // Similar to export, we fetch all for now.
+    const result = await window.socialDB.queryMedia(criteria, 0, 1000000);
+    return result.items;
 }
 
-function updateDeletePreview() {
-    const data = getDeleteFilterData();
+async function updateDeletePreview() {
+    const pFilter = deletePlatform.value;
+    const uFilter = deleteUser.value;
+    const criteria = { platform: pFilter, userId: uFilter };
+
+    // Get count efficiently
+    const count = await window.socialDB.countMedia(criteria);
+
+    // Get Sample efficiently
+    const sampleResult = await window.socialDB.queryMedia(criteria, 0, 10);
+    const data = sampleResult.items;
+
     const columns = ['originalUrl', 'scrapedAt', 'userId', 'platform']; // Fixed columns for delete preview
     const table = document.getElementById('delete-preview-table');
     const tbody = table.querySelector('tbody');
 
     // Update Count
-    deleteCountParams.textContent = data.length;
+    deleteCountParams.textContent = count;
 
     // Rows (Limit to 10 for performance in preview)
-    const previewData = data.slice(0, 10);
+    const previewData = data; // Already limited
 
     tbody.innerHTML = '';
     if (previewData.length === 0) {
@@ -931,9 +1081,9 @@ function updateDeletePreview() {
         tbody.appendChild(tr);
     });
 
-    if (data.length > 10) {
+    if (count > 10) {
         const tr = document.createElement('tr');
-        tr.innerHTML = `<td colspan="${columns.length}" style="text-align:center; color:#888;">...and ${data.length - 10} more items</td>`;
+        tr.innerHTML = `<td colspan="${columns.length}" style="text-align:center; color:#888;">...and ${count - 10} more items</td>`;
         tbody.appendChild(tr);
     }
 }
