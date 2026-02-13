@@ -393,73 +393,45 @@ function renderStats() {
         const newBtn = btnPopulateVal.cloneNode(true);
         btnPopulateVal.parentNode.replaceChild(newBtn, btnPopulateVal);
 
-        newBtn.addEventListener('click', async () => {
-            const originalText = newBtn.textContent;
+        newBtn.addEventListener('click', () => {
             newBtn.disabled = true;
-            newBtn.textContent = 'Checking Cache...';
+            newBtn.textContent = 'Requesting...';
 
-            try {
-                // 1. Identify missing/expired items
-                const allThumbnails = await window.socialDB.getAll('thumbnails');
-                const cachedMap = new Map();
-                allThumbnails.forEach(t => cachedMap.set(t.url, t.ttl));
+            chrome.runtime.sendMessage({ action: "START_CACHE_POPULATION" }, (response) => {
+                if (chrome.runtime.lastError) {
+                    console.error(chrome.runtime.lastError);
+                    alert("Failed to contact background script. Please check if the extension is running.");
+                    newBtn.disabled = false;
+                    newBtn.textContent = 'Populate Cache';
+                } else if (response && response.started) {
+                    newBtn.textContent = 'Background Task Started...';
+                    // The progress listener will take over
+                } else {
+                    alert("Cache population failed to start: " + (response ? response.error : 'Unknown error'));
+                    newBtn.disabled = false;
+                    newBtn.textContent = 'Populate Cache';
+                }
+            });
+        });
 
-                const now = Date.now();
-                const itemsToProcess = [];
+        // Listen for progress updates from background
+        chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+            if (request.action === "CACHE_PROGRESS_UPDATE") {
+                const { current, total, complete } = request;
 
-                for (const media of allMedia) {
-                    if (media.thumbnailUrl && !media.thumbnailUrl.startsWith('data:')) {
-                        const ttl = cachedMap.get(media.thumbnailUrl);
-                        // If missing OR expired
-                        if (ttl === undefined || now > ttl) {
-                            itemsToProcess.push(media);
-                        }
+                if (complete) {
+                    newBtn.textContent = 'Populate Cache';
+                    newBtn.disabled = false;
+                    if (total > 0) {
+                        // Only alert if we actually did something
+                        // Use a toast or less intrusive notification if possible, but alert is standard here
+                        // alert(`Background cache population complete. Processed ${total} items.`);
                     }
+                    renderStorageStats();
+                } else {
+                    newBtn.disabled = true;
+                    newBtn.textContent = `Populating... (${current}/${total})`;
                 }
-
-                if (itemsToProcess.length === 0) {
-                    alert('Cache is already up to date!');
-                    newBtn.textContent = originalText;
-                    newBtn.disabled = false;
-                    return;
-                }
-
-                // 2. Confirm with user
-                if (!confirm(`Found ${itemsToProcess.length} thumbnails that need to be fetched/refreshed.\n\nContinue?`)) {
-                    newBtn.textContent = originalText;
-                    newBtn.disabled = false;
-                    return;
-                }
-
-                newBtn.textContent = 'Populating...';
-                let count = 0;
-                const total = itemsToProcess.length;
-
-                // 3. Process filtered list
-                for (let i = 0; i < total; i++) {
-                    const media = itemsToProcess[i];
-
-                    try {
-                        await fetchAndCache(media.thumbnailUrl, document.createElement('div'), null); // Dummy div
-                        count++;
-
-                        // Wait 200ms to ensure max 5 req/s
-                        await new Promise(r => setTimeout(r, 200));
-                    } catch (e) { console.error(e); }
-
-                    // Update progress
-                    newBtn.textContent = `Populating... (${i + 1}/${total})`;
-                }
-
-                alert(`Cache population complete. Processed ${count} thumbnails.`);
-                renderStorageStats();
-
-            } catch (err) {
-                console.error("Populate Error:", err);
-                alert("An error occurred while populating cache.");
-            } finally {
-                newBtn.textContent = 'Populate Cache';
-                newBtn.disabled = false;
             }
         });
     }
@@ -616,22 +588,33 @@ async function loadThumbnailForCard(card, media) {
 
     // 3. Cache Logic
     const TTL = 7 * 24 * 60 * 60 * 1000; // 7 Days in ms
-    // const TTL = 10000; // Debug: 10 seconds
 
     try {
         const cached = await window.socialDB.getThumbnail(url);
         const now = Date.now();
 
         if (cached) {
+            // Check for Negative Cache (Prior Failure)
+            if (cached.error && now < cached.ttl) {
+                // Negative Hit: Skip fetch
+                showPlaceholder(thumbDiv, media, "Load Failed (Cached)");
+                return;
+            }
+
             if (now < cached.ttl) {
                 // HIT & VALID
-                const blobUrl = URL.createObjectURL(cached.blob);
-                thumbDiv.style.backgroundImage = `url('${blobUrl}')`;
-                thumbDiv.classList.remove('loading');
-                thumbDiv.innerHTML = '';
+                if (cached.blob) {
+                    const blobUrl = URL.createObjectURL(cached.blob);
+                    thumbDiv.style.backgroundImage = `url('${blobUrl}')`;
+                    thumbDiv.classList.remove('loading');
+                    thumbDiv.innerHTML = '';
+                } else {
+                    // Should be covered by error check, but safety fallback
+                    showPlaceholder(thumbDiv, media, "Invalid Cache");
+                }
             } else {
                 // HIT & EXPIRED -> Re-fetch
-                console.log(`[Cache] Expired: ${url}`);
+                // console.log(`[Cache] Expired: ${url}`);
                 fetchAndCache(url, thumbDiv, cached.blob); // Pass old blob as fallback
             }
         } else {
@@ -648,6 +631,7 @@ async function loadThumbnailForCard(card, media) {
 
 async function fetchAndCache(url, thumbDiv, fallbackBlob) {
     const TTL = 7 * 24 * 60 * 60 * 1000;
+    const ERROR_TTL = 24 * 60 * 60 * 1000; // 24 Hours for failed attempts
 
     try {
         const response = await fetch(url);
@@ -659,7 +643,8 @@ async function fetchAndCache(url, thumbDiv, fallbackBlob) {
         await window.socialDB.saveThumbnail({
             url: url,
             blob: blob,
-            ttl: Date.now() + TTL
+            ttl: Date.now() + TTL,
+            error: false
         });
 
         const blobUrl = URL.createObjectURL(blob);
@@ -676,7 +661,8 @@ async function fetchAndCache(url, thumbDiv, fallbackBlob) {
             await window.socialDB.saveThumbnail({
                 url: url,
                 blob: fallbackBlob,
-                ttl: Date.now() + TTL
+                ttl: Date.now() + TTL,
+                error: false
             });
 
             const blobUrl = URL.createObjectURL(fallbackBlob);
@@ -684,7 +670,14 @@ async function fetchAndCache(url, thumbDiv, fallbackBlob) {
             thumbDiv.classList.remove('loading');
             thumbDiv.innerHTML = '';
         } else {
-            // No fallback, just show error placeholder or try direct URL (which likely fails too)
+            // NEGATIVE CACHING: Save failure state
+            await window.socialDB.saveThumbnail({
+                url: url,
+                blob: null,
+                ttl: Date.now() + ERROR_TTL,
+                error: true
+            });
+
             showPlaceholder(thumbDiv, { originalUrl: url, scrapedAt: Date.now() }, "Load Failed");
         }
     }
