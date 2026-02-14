@@ -1,7 +1,7 @@
 /**
  * Storage Utility (IndexedDB Wrapper)
  */
-const DB_NAME = 'SocialScraperDB';
+const DB_NAME = "SocialScraperDB";
 const DB_VERSION = 2;
 
 class StorageUtils {
@@ -24,20 +24,20 @@ class StorageUtils {
                 const db = event.target.result;
 
                 // Media Store
-                if (!db.objectStoreNames.contains('media')) {
-                    const mediaStore = db.createObjectStore('media', { keyPath: 'id' });
-                    mediaStore.createIndex('platform', 'platform', { unique: false });
-                    mediaStore.createIndex('userId', 'userId', { unique: false });
+                if (!db.objectStoreNames.contains("media")) {
+                    const mediaStore = db.createObjectStore("media", { keyPath: "id" });
+                    mediaStore.createIndex("platform", "platform", { unique: false });
+                    mediaStore.createIndex("userId", "userId", { unique: false });
                 }
 
                 // Thumbnail Cache Store
-                if (!db.objectStoreNames.contains('thumbnails')) {
-                    db.createObjectStore('thumbnails', { keyPath: 'url' });
+                if (!db.objectStoreNames.contains("thumbnails")) {
+                    db.createObjectStore("thumbnails", { keyPath: "url" });
                 }
 
                 // Thumbnail Cache Store
-                if (!db.objectStoreNames.contains('thumbnails')) {
-                    db.createObjectStore('thumbnails', { keyPath: 'url' });
+                if (!db.objectStoreNames.contains("thumbnails")) {
+                    db.createObjectStore("thumbnails", { keyPath: "url" });
                 }
             };
 
@@ -54,7 +54,7 @@ class StorageUtils {
     async save(storeName, data) {
         await this.init();
         return new Promise((resolve, reject) => {
-            const transaction = this.db.transaction([storeName], 'readwrite');
+            const transaction = this.db.transaction([storeName], "readwrite");
             const store = transaction.objectStore(storeName);
             const request = store.put(data);
 
@@ -69,21 +69,21 @@ class StorageUtils {
     async saveAll(storeName, items) {
         await this.init();
         return new Promise((resolve, reject) => {
-            const transaction = this.db.transaction([storeName], 'readwrite');
+            const transaction = this.db.transaction([storeName], "readwrite");
             const store = transaction.objectStore(storeName);
 
             transaction.oncomplete = () => resolve();
             transaction.onerror = (event) => reject(event.target.error);
 
-            items.forEach(item => {
+            items.forEach((item) => {
                 // Conditional Update Logic for Media with Data URIs
-                if (storeName === 'media' && item.thumbnailUrl && item.thumbnailUrl.startsWith('data:')) {
+                if (storeName === "media" && item.thumbnailUrl && item.thumbnailUrl.startsWith("data:")) {
                     // Check if item exists
                     const request = store.get(item.id);
                     request.onsuccess = () => {
                         const existing = request.result;
                         // If exists and has a VALID thumbnail (not data URI), do NOT overwrite
-                        if (existing && existing.thumbnailUrl && !existing.thumbnailUrl.startsWith('data:')) {
+                        if (existing && existing.thumbnailUrl && !existing.thumbnailUrl.startsWith("data:")) {
                             console.log(`[Storage] Skipping overwrite of ${item.id} (Preserving existing valid thumbnail)`);
                         } else {
                             // Overwrite if it didn't exist OR if existing was also a data URI
@@ -108,7 +108,7 @@ class StorageUtils {
     async getAll(storeName) {
         await this.init();
         return new Promise((resolve, reject) => {
-            const transaction = this.db.transaction([storeName], 'readonly');
+            const transaction = this.db.transaction([storeName], "readonly");
             const store = transaction.objectStore(storeName);
             const request = store.getAll();
 
@@ -122,7 +122,7 @@ class StorageUtils {
     async delete(storeName, key) {
         await this.init();
         return new Promise((resolve, reject) => {
-            const transaction = this.db.transaction([storeName], 'readwrite');
+            const transaction = this.db.transaction([storeName], "readwrite");
             const store = transaction.objectStore(storeName);
             const request = store.delete(key);
 
@@ -137,13 +137,13 @@ class StorageUtils {
     async deleteBatch(storeName, keys) {
         await this.init();
         return new Promise((resolve, reject) => {
-            const transaction = this.db.transaction([storeName], 'readwrite');
+            const transaction = this.db.transaction([storeName], "readwrite");
             const store = transaction.objectStore(storeName);
 
             transaction.oncomplete = () => resolve();
             transaction.onerror = () => reject(transaction.error);
 
-            keys.forEach(key => store.delete(key));
+            keys.forEach((key) => store.delete(key));
         });
     }
 
@@ -153,7 +153,7 @@ class StorageUtils {
     async clearStore(storeName) {
         await this.init();
         return new Promise((resolve, reject) => {
-            const transaction = this.db.transaction([storeName], 'readwrite');
+            const transaction = this.db.transaction([storeName], "readwrite");
             const store = transaction.objectStore(storeName);
             const request = store.clear();
 
@@ -168,8 +168,8 @@ class StorageUtils {
     async getThumbnail(url) {
         await this.init();
         return new Promise((resolve, reject) => {
-            const transaction = this.db.transaction(['thumbnails'], 'readonly');
-            const store = transaction.objectStore('thumbnails');
+            const transaction = this.db.transaction(["thumbnails"], "readonly");
+            const store = transaction.objectStore("thumbnails");
             const request = store.get(url);
 
             request.onsuccess = () => resolve(request.result);
@@ -193,8 +193,8 @@ class StorageUtils {
         }
 
         return new Promise((resolve, reject) => {
-            const transaction = this.db.transaction(['thumbnails'], 'readwrite');
-            const store = transaction.objectStore('thumbnails');
+            const transaction = this.db.transaction(["thumbnails"], "readwrite");
+            const store = transaction.objectStore("thumbnails");
             const request = store.put(data); // { url, blob, ttl }
 
             request.onsuccess = () => resolve();
@@ -208,7 +208,7 @@ class StorageUtils {
      */
     async compressImage(blob) {
         // Feature detection
-        if (typeof createImageBitmap === 'undefined' || typeof OffscreenCanvas === 'undefined') {
+        if (typeof createImageBitmap === "undefined" || typeof OffscreenCanvas === "undefined") {
             return blob;
         }
 
@@ -216,13 +216,13 @@ class StorageUtils {
             const bitmap = await createImageBitmap(blob);
             const { width, height } = bitmap;
             const canvas = new OffscreenCanvas(width, height);
-            const ctx = canvas.getContext('2d');
+            const ctx = canvas.getContext("2d");
             ctx.drawImage(bitmap, 0, 0);
 
             // Encode to WebP at 95% quality (Visual Lossless)
             const compressedBlob = await canvas.convertToBlob({
-                type: 'image/webp',
-                quality: 1
+                type: "image/webp",
+                quality: 1,
             });
 
             // Clean up
@@ -233,7 +233,6 @@ class StorageUtils {
                 return compressedBlob;
             }
             return blob;
-
         } catch (err) {
             return blob;
         }
@@ -242,8 +241,8 @@ class StorageUtils {
     async deleteThumbnail(url) {
         await this.init();
         return new Promise((resolve, reject) => {
-            const transaction = this.db.transaction(['thumbnails'], 'readwrite');
-            const store = transaction.objectStore('thumbnails');
+            const transaction = this.db.transaction(["thumbnails"], "readwrite");
+            const store = transaction.objectStore("thumbnails");
             const request = store.delete(url);
 
             request.onsuccess = () => resolve();
@@ -264,9 +263,9 @@ class StorageUtils {
         const getSize = (obj) => JSON.stringify(obj).length * 2;
 
         return new Promise((resolve, reject) => {
-            const transaction = this.db.transaction(['media', 'thumbnails'], 'readonly');
-            const mediaStore = transaction.objectStore('media');
-            const thumbStore = transaction.objectStore('thumbnails');
+            const transaction = this.db.transaction(["media", "thumbnails"], "readonly");
+            const mediaStore = transaction.objectStore("media");
+            const thumbStore = transaction.objectStore("thumbnails");
 
             let mediaSize = 0;
             let thumbSize = 0;
@@ -303,7 +302,7 @@ class StorageUtils {
                     }
 
                     // Invalid Thumbnail Check
-                    if (!m.thumbnailUrl || m.thumbnailUrl.startsWith('data:')) {
+                    if (!m.thumbnailUrl || m.thumbnailUrl.startsWith("data:")) {
                         invalidThumbCount++;
                     }
 
@@ -347,7 +346,7 @@ class StorageUtils {
 
             function finalize() {
                 // Top User
-                let topUser = { userId: 'None', size: 0 };
+                let topUser = { userId: "None", size: 0 };
                 for (const [userId, size] of Object.entries(userUsage)) {
                     if (size > topUser.size) {
                         topUser = { userId, size };
@@ -365,8 +364,8 @@ class StorageUtils {
                         cachedThumbnails: cachedThumbCount,
                         invalidThumbnails: invalidThumbCount,
                         expiredThumbnails: expiredThumbCount,
-                        videosNotCached: Math.max(0, totalMediaCount - cachedThumbCount)
-                    }
+                        videosNotCached: Math.max(0, totalMediaCount - cachedThumbCount),
+                    },
                 });
             }
         });
@@ -379,19 +378,19 @@ class StorageUtils {
     async queryMedia(criteria = {}, offset = 0, limit = 50) {
         await this.init();
         return new Promise((resolve, reject) => {
-            const transaction = this.db.transaction(['media'], 'readonly');
-            const store = transaction.objectStore('media');
+            const transaction = this.db.transaction(["media"], "readonly");
+            const store = transaction.objectStore("media");
 
             let request;
             let indexName = null;
 
             // Optimization: Use Index if possible
-            if (criteria.platform && criteria.platform !== 'ALL') {
-                request = store.index('platform').openCursor(IDBKeyRange.only(criteria.platform));
-                indexName = 'platform';
-            } else if (criteria.userId && criteria.userId !== 'ALL') {
-                request = store.index('userId').openCursor(IDBKeyRange.only(criteria.userId));
-                indexName = 'userId';
+            if (criteria.platform && criteria.platform !== "ALL") {
+                request = store.index("platform").openCursor(IDBKeyRange.only(criteria.platform));
+                indexName = "platform";
+            } else if (criteria.userId && criteria.userId !== "ALL") {
+                request = store.index("userId").openCursor(IDBKeyRange.only(criteria.userId));
+                indexName = "userId";
             } else {
                 request = store.openCursor(); // Full scan
             }
@@ -409,10 +408,10 @@ class StorageUtils {
                     let match = true;
 
                     // If we didn't use an index for these, check them manually
-                    if (criteria.platform && criteria.platform !== 'ALL' && indexName !== 'platform') {
+                    if (criteria.platform && criteria.platform !== "ALL" && indexName !== "platform") {
                         if (m.platform !== criteria.platform) match = false;
                     }
-                    if (criteria.userId && criteria.userId !== 'ALL' && indexName !== 'userId') {
+                    if (criteria.userId && criteria.userId !== "ALL" && indexName !== "userId") {
                         if (m.userId !== criteria.userId) match = false;
                     }
 
@@ -472,7 +471,7 @@ class StorageUtils {
         let startDate = null;
         let endDate = null;
 
-        if (typeof criteria === 'string') {
+        if (typeof criteria === "string") {
             platform = criteria;
         } else {
             platform = criteria.platform;
@@ -481,8 +480,8 @@ class StorageUtils {
         }
 
         return new Promise((resolve, reject) => {
-            const transaction = this.db.transaction(['media'], 'readonly');
-            const store = transaction.objectStore('media');
+            const transaction = this.db.transaction(["media"], "readonly");
+            const store = transaction.objectStore("media");
             const users = new Set();
 
             const request = store.openCursor();
@@ -492,7 +491,7 @@ class StorageUtils {
                     const m = cursor.value;
                     if (m.userId) {
                         let match = true;
-                        if (platform && platform !== 'ALL' && m.platform !== platform) match = false;
+                        if (platform && platform !== "ALL" && m.platform !== platform) match = false;
                         if (startDate && (!m.scrapedAt || m.scrapedAt < startDate)) match = false;
                         if (endDate && (!m.scrapedAt || m.scrapedAt > endDate)) match = false;
 
@@ -522,8 +521,8 @@ class StorageUtils {
     async countMedia(criteria = {}) {
         await this.init();
         return new Promise((resolve, reject) => {
-            const transaction = this.db.transaction(['media'], 'readonly');
-            const store = transaction.objectStore('media');
+            const transaction = this.db.transaction(["media"], "readonly");
+            const store = transaction.objectStore("media");
             let count = 0;
 
             const request = store.openCursor();
@@ -532,8 +531,8 @@ class StorageUtils {
                 if (cursor) {
                     const m = cursor.value;
                     let match = true;
-                    if (criteria.platform && criteria.platform !== 'ALL' && m.platform !== criteria.platform) match = false;
-                    if (criteria.userId && criteria.userId !== 'ALL' && m.userId !== criteria.userId) match = false;
+                    if (criteria.platform && criteria.platform !== "ALL" && m.platform !== criteria.platform) match = false;
+                    if (criteria.userId && criteria.userId !== "ALL" && m.userId !== criteria.userId) match = false;
 
                     if (criteria.newOnly) {
                         // Resolve Flags
@@ -561,7 +560,7 @@ class StorageUtils {
     async exportStore(storeName, offset = 0, limit = 1000) {
         await this.init();
         return new Promise((resolve, reject) => {
-            const transaction = this.db.transaction([storeName], 'readonly');
+            const transaction = this.db.transaction([storeName], "readonly");
             const store = transaction.objectStore(storeName);
             const items = [];
             let advanced = false;
@@ -598,10 +597,10 @@ class StorageUtils {
      * Import Data
      * mode: 'overwrite' | 'merge' | 'skip'
      */
-    async importData(storeName, data, mode = 'skip') {
+    async importData(storeName, data, mode = "skip") {
         await this.init();
         return new Promise((resolve, reject) => {
-            const transaction = this.db.transaction([storeName], 'readwrite');
+            const transaction = this.db.transaction([storeName], "readwrite");
             const store = transaction.objectStore(storeName);
 
             let successCount = 0;
@@ -618,13 +617,13 @@ class StorageUtils {
             };
 
             const processItem = (item) => {
-                if (mode === 'overwrite') {
+                if (mode === "overwrite") {
                     putItem(item);
                 } else {
                     // Check existence (Async check inside loop is tricky with simple forEach)
                     // Better to just PUT for merge, or use add() for skip?
                     // store.add() fails if key exists.
-                    if (mode === 'skip') {
+                    if (mode === "skip") {
                         const req = store.add(item);
                         req.onsuccess = () => successCount++;
                         req.onerror = (e) => {
@@ -632,14 +631,14 @@ class StorageUtils {
                             e.stopPropagation();
                             // errorCount++; // Duplicate is not strictly an error in skip mode
                         };
-                    } else if (mode === 'merge') {
+                    } else if (mode === "merge") {
                         putItem(item); // Put overwrites, efficiently merging
                     }
                 }
             };
 
             // Transaction-based loop
-            data.forEach(item => processItem(item));
+            data.forEach((item) => processItem(item));
 
             transaction.oncomplete = () => resolve({ success: successCount, errors: errorCount });
             transaction.onerror = (e) => reject(e.target.error);
@@ -655,16 +654,16 @@ class StorageUtils {
 
         await this.init();
         return new Promise((resolve, reject) => {
-            const transaction = this.db.transaction(['media'], 'readwrite');
-            const store = transaction.objectStore('media');
+            const transaction = this.db.transaction(["media"], "readwrite");
+            const store = transaction.objectStore("media");
 
-            ids.forEach(id => {
+            ids.forEach((id) => {
                 const req = store.get(id);
                 req.onsuccess = () => {
                     const item = req.result;
                     if (item) {
                         // Initialize if undefined
-                        if (typeof item.exportFlags === 'undefined') item.exportFlags = 0;
+                        if (typeof item.exportFlags === "undefined") item.exportFlags = 0;
 
                         // Legacy Migration: If previously 'exported' is true, set ALL flags (or specific set)
                         // For safety, let's treat legacy 'exported=true' as 'ALL_EXPORT' to avoid re-exporting old stuff unexpectedly
@@ -697,12 +696,7 @@ StorageUtils.ExportFlags = {
     DB: 1 << 5, // 32
 };
 // Helper for "All Export Modes" (excluding VIEWED)
-StorageUtils.ExportFlags.ALL_EXPORT =
-    StorageUtils.ExportFlags.URLS |
-    StorageUtils.ExportFlags.USERS |
-    StorageUtils.ExportFlags.THUMBNAILS |
-    StorageUtils.ExportFlags.CSV |
-    StorageUtils.ExportFlags.DB;
+StorageUtils.ExportFlags.ALL_EXPORT = StorageUtils.ExportFlags.URLS | StorageUtils.ExportFlags.USERS | StorageUtils.ExportFlags.THUMBNAILS | StorageUtils.ExportFlags.CSV | StorageUtils.ExportFlags.DB;
 
 // Global instance for Contexts (Window or Service Worker)
-(typeof self !== 'undefined' ? self : window).socialDB = new StorageUtils();
+(typeof self !== "undefined" ? self : window).socialDB = new StorageUtils();

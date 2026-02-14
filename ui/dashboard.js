@@ -23,7 +23,12 @@ let deletePlatform, deleteUser, deleteCountParams;
 // Removed allMedia global to prevent memory crashes
 let cachePopulateBtn = null; // Reference to cache populate button
 let currentExportMode = "urls"; // Default mode matching HTML active tab
-let newOnlyModeState = { users: false, urls: false, thumbnails: false, csv: false };
+let newOnlyModeState = {
+    users: false,
+    urls: false,
+    thumbnails: false,
+    csv: false,
+};
 
 // Init
 async function init() {
@@ -202,7 +207,10 @@ function initUI() {
             if (e.target.classList.contains("btn-download")) {
                 const url = e.target.getAttribute("data-url");
                 if (url) {
-                    chrome.runtime.sendMessage({ action: "DOWNLOAD_MEDIA", payload: { url: url } });
+                    chrome.runtime.sendMessage({
+                        action: "DOWNLOAD_MEDIA",
+                        payload: { url: url },
+                    });
                 }
             }
         });
@@ -1033,10 +1041,14 @@ async function updateDeletePreview() {
 
 async function backupToFolder(dirHandle, criteria, updateProgress) {
     // Create images directory
-    const imagesHandle = await dirHandle.getDirectoryHandle("images", { create: true });
+    const imagesHandle = await dirHandle.getDirectoryHandle("images", {
+        create: true,
+    });
 
     // Create data.json file stream
-    const fileHandle = await dirHandle.getFileHandle("data_backup.json", { create: true });
+    const fileHandle = await dirHandle.getFileHandle("data_backup.json", {
+        create: true,
+    });
     const writable = await fileHandle.createWritable();
     await writable.write("[\n"); // Start JSON array
 
@@ -1093,7 +1105,9 @@ async function backupToFolder(dirHandle, criteria, updateProgress) {
                         const safeId = (media.id || "unknown").replace(/[^a-z0-9]/gi, "_");
                         const filename = `${media.platform}_${safeUserId}_${safeId}.${ext}`;
 
-                        const imgFileHandle = await imagesHandle.getFileHandle(filename, { create: true });
+                        const imgFileHandle = await imagesHandle.getFileHandle(filename, {
+                            create: true,
+                        });
                         const imgWritable = await imgFileHandle.createWritable();
                         await imgWritable.write(blob);
                         await imgWritable.close();
@@ -1634,7 +1648,9 @@ async function exportDB(progressCallback) {
 
     // Helper to download JSON
     const downloadJSON = (obj, name) => {
-        const blob = new Blob([JSON.stringify(obj, null, 2)], { type: "application/json" });
+        const blob = new Blob([JSON.stringify(obj, null, 2)], {
+            type: "application/json",
+        });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
