@@ -469,14 +469,15 @@ async function renderStats() {
                 } else if (response && response.started) {
                     // Only set to "Starting..." if it didn't finish immediately
                     if (response.immediate) {
-                        // It finished immediately (nothing to cache).
-                        // The progress listener might have fired already or will fire momentarily.
-                        // We just ensure we don't get stuck in "Starting..."
-                        // Ideally, we wait for the "complete" message which resets the button.
-                        // But if the "complete" message arrived BEFORE this callback, the button is already reset!
-                        // If we set it to "Starting..." now, we overwrite the reset.
-                        // So: If immediate, DO NOTHING. The "complete" message handles it.
                         console.log("Cache population completed immediately.");
+                        // Failsafe: Reset button after short delay if 'complete' message misses
+                        // or if we processed it faster than the UI could react to 'Requesting...'
+                        setTimeout(() => {
+                            if (cachePopulateBtn.textContent === 'Requesting...') {
+                                cachePopulateBtn.textContent = 'Populate Cache';
+                                cachePopulateBtn.disabled = false;
+                            }
+                        }, 500);
                     } else {
                         cachePopulateBtn.textContent = 'Starting...';
                     }

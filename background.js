@@ -109,25 +109,42 @@ async function startCachePopulation(silent = false) {
         await setPersistedState(total > 0 ? 'RUNNING' : 'IDLE', 0, total);
 
         if (total === 0) {
+            // isPopulating = false; // WAIT! Keep true until we broadcast complete.
+            // Actually, for immediate return, we can set false BUT we must ensure UI gets the message.
+
+            console.log("[Background] 0 items to cache. Sending completion immediately.");
+
+            // Broadcast complete immediately
+            await broadcastProgress(0, 0, true);
+
             isPopulating = false;
-            // We can still broadcast complete to ensure UI matches, but return 'immediate' flag
-            // to allow UI to handle it synchronously if it wants.
-            setTimeout(() => broadcastProgress(0, 0, true), 100);
+            await setPersistedState('IDLE', 0, 0);
+
             return { started: true, immediate: true };
         }
 
         // 4. Process Queue (Async - do not await loop for return)
-        processQueue(itemsToProcess).then(() => {
+        processQueue(itemsToProcess).then(async () => {
+            console.log("[Background] Queue processing finished.");
+            // Wait a moment before broadcasting completion to ensure UI has received all progress updates
+            // and to prevents race conditions where 'complete' arrives before 'progress'
+            await new Promise(r => setTimeout(r, 500));
+
+            await broadcastProgress(total, total, true);
             isPopulating = false;
-            setPersistedState('IDLE', 0, 0);
+            await setPersistedState('IDLE', 0, 0);
         });
 
         return { started: true, immediate: false };
 
     } catch (err) {
         console.error("[Background] Cache population error:", err);
+        // Ensure we reset state and notify UI of error/completion even on failure
         isPopulating = false;
         await setPersistedState('IDLE', 0, 0);
+
+        // Broadcast completion with error state implicitly (complete=true resets UI)
+        setTimeout(() => broadcastProgress(0, 0, true), 100);
         throw err;
     }
 }
