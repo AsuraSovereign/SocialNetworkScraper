@@ -867,7 +867,10 @@ async function updateLivePreview() {
 
                 result.items.forEach(item => {
                     const rowCells = rawCols.map(col => {
-                        let val = item[col] || '';
+                        let val = item[col];
+                        if (col === 'videoId' && !val) val = item.id;
+                        val = val || '';
+
                         if (col === 'scrapedAt') val = new Date(val).toLocaleString();
                         return `<td title="${val}">${val}</td>`;
                     });
@@ -1398,7 +1401,10 @@ async function exportCSV(filters) {
 
     const rows = result.items.map(m => {
         return columns.map(col => {
-            let val = m[col] || '';
+            let val = m[col];
+            if (col === 'videoId' && !val) val = m.id;
+            val = val || '';
+
             if (col === 'scrapedAt') val = new Date(val).toISOString();
             const str = String(val).replace(/"/g, '""');
             return `"${str}"`;
