@@ -4,11 +4,13 @@ const statsTab = document.getElementById('tab-stats');
 const videosTab = document.getElementById('tab-videos');
 const exportTab = document.getElementById('tab-export');
 const deleteTab = document.getElementById('tab-delete');
+const importTab = document.getElementById('tab-import');
 
 const linkStats = document.getElementById('link-stats');
 const linkVideos = document.getElementById('link-videos');
 const linkExport = document.getElementById('link-export');
 const linkDelete = document.getElementById('link-delete');
+const linkImport = document.getElementById('link-import');
 
 // Filters & UI Elements (Initialized in initUI)
 let filterPlatform, filterUser, filterNewOnly;
@@ -17,7 +19,10 @@ let deletePlatform, deleteUser, deleteCountParams;
 
 // State
 // Removed allMedia global to prevent memory crashes
+// State
+// Removed allMedia global to prevent memory crashes
 let cachePopulateBtn = null; // Reference to cache populate button
+let currentExportMode = 'users'; // Default mode
 
 // Init
 async function init() {
@@ -34,7 +39,8 @@ async function loadTabs() {
         { id: 'tab-stats', file: 'tabs/stats.html' },
         { id: 'tab-videos', file: 'tabs/videos.html' },
         { id: 'tab-export', file: 'tabs/export.html' },
-        { id: 'tab-delete', file: 'tabs/delete.html' }
+        { id: 'tab-delete', file: 'tabs/delete.html' },
+        { id: 'tab-import', file: 'tabs/import.html' }
     ];
 
     const promises = tabs.map(async (tab) => {
@@ -71,119 +77,34 @@ function initUI() {
     // Note: Some listeners were attached globally or in setupFilters, checking below...
 
     // Export UI Logic Init
-    if (exportNewOnly) {
-        // Export Settings Persistence
-        const storedVal = localStorage.getItem('socialScraper_exportNewOnly');
-        if (storedVal === null) {
-            exportNewOnly.checked = true;
-        } else {
-            exportNewOnly.checked = storedVal === 'true';
-        }
+    setupExportTabs();
+    setupImportTab();
 
-        exportNewOnly.addEventListener('change', () => {
-            localStorage.setItem('socialScraper_exportNewOnly', exportNewOnly.checked);
-            updateLivePreview();
+    // Export Action
+    const btnRun = document.getElementById('btn-run-export');
+    if (btnRun) {
+        btnRun.addEventListener('click', async () => {
+            await handleExportAction();
         });
     }
 
-    // Export Buttons
-    document.getElementById('btn-export-txt').addEventListener('click', async () => {
-        const data = await getExportData();
-        if (data.length === 0) { alert('No data matches your filters.'); return; }
-
-        const text = data.map(m => m.originalUrl).join('\n');
-        const filename = generateExportFilename('txt');
-        downloadFile(text, filename, 'text/plain');
-
-        await markItemsAsExported(data);
+    // Live Preview Triggers
+    const previewTriggers = [
+        'export-platform', 'export-user',
+        'export-date-start', 'export-date-end',
+        'export-new-only'
+    ];
+    previewTriggers.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('change', updateLivePreview);
     });
 
-    document.getElementById('btn-export-csv').addEventListener('click', async () => {
-        const data = await getExportData();
-        if (data.length === 0) { alert('No data matches your filters.'); return; }
-
-        const columns = getSelectedColumns();
-        if (columns.length === 0) { alert('Please select at least one column.'); return; }
-
-        // Header
-        const header = columns.map(c => formatColumnName(c)).join(',') + '\n';
-
-        // Rows
-        const rows = data.map(m => {
-            return columns.map(col => {
-                let val = m[col] || '';
-                if (col === 'scrapedAt') val = new Date(val).toISOString();
-                // Escape CSV injection/commas
-                const str = String(val).replace(/"/g, '""');
-                return `"${str}"`;
-            }).join(',');
-        }).join('\n');
-
-        const filename = generateExportFilename('csv');
-        downloadFile(header + rows, filename, 'text/csv');
-
-        await markItemsAsExported(data);
+    // Column pills for CSV
+    document.querySelectorAll('#column-pills input').forEach(cb => {
+        cb.addEventListener('change', updateLivePreview);
     });
 
-    // NEW: Export Users
-    document.getElementById('btn-export-users').addEventListener('click', async () => {
-        // We use the current export filters? Or just export ALL users?
-        // Requirement says: "Export all users already scrapped" and "Export all users already scrapped by platform"
-        // So we should respect the Platform filter, but maybe ignore User filter (since we want list of users).
-        // Let's use getUniqueUsers(platform)
 
-        const pFilter = exportPlatform.value;
-        const users = await window.socialDB.getUniqueUsers(pFilter);
-
-        if (users.length === 0) {
-            alert('No users found.');
-            return;
-        }
-
-        const text = users.join('\n');
-        const filename = `Users_${pFilter === 'ALL' ? 'AllPlatforms' : pFilter}_${new Date().toISOString().split('T')[0]}.txt`;
-        downloadFile(text, filename, 'text/plain');
-    });
-
-    // NEW: Export Thumbnails
-    document.getElementById('btn-export-thumbs').addEventListener('click', async () => {
-        if (!window.showDirectoryPicker) {
-            alert("Browser not supported.");
-            return;
-        }
-
-        const pFilter = exportPlatform.value;
-        const uFilter = exportUser.value;
-        const criteria = { platform: pFilter, userId: uFilter, newOnly: exportNewOnly.checked };
-
-        // Check count
-        const count = await window.socialDB.countMedia(criteria);
-        if (count === 0) { alert('No items match criteria.'); return; }
-
-        const btn = document.getElementById('btn-export-thumbs');
-        const originalText = btn.innerHTML;
-        btn.disabled = true;
-        btn.textContent = 'Select Folder...';
-
-        try {
-            const dirHandle = await window.showDirectoryPicker();
-            btn.textContent = 'Exporting...';
-
-            await backupToFolder(dirHandle, criteria, (processed) => {
-                btn.textContent = `Exporting... ${processed}/${count}`;
-            });
-
-            alert(`Export Complete! Saved to ${dirHandle.name}/images`);
-        } catch (err) {
-            if (err.name !== 'AbortError') {
-                console.error(err);
-                alert("Export failed: " + err.message);
-            }
-        } finally {
-            btn.disabled = false;
-            btn.innerHTML = originalText;
-        }
-    });
 
     // Delete Action
     document.getElementById('btn-delete-confirm').addEventListener('click', async () => {
@@ -336,6 +257,7 @@ function setupNavigation() {
     linkVideos.addEventListener('click', () => showTab('videos'));
     linkExport.addEventListener('click', () => showTab('export'));
     linkDelete.addEventListener('click', () => showTab('delete'));
+    linkImport.addEventListener('click', () => showTab('import'));
 }
 
 function showTab(tabName) {
@@ -344,11 +266,13 @@ function showTab(tabName) {
     videosTab.style.display = 'none';
     exportTab.style.display = 'none';
     deleteTab.style.display = 'none';
+    importTab.style.display = 'none';
 
     // Deactivate links
     linkStats.classList.remove('active');
     linkVideos.classList.remove('active');
     linkExport.classList.remove('active');
+    linkImport.classList.remove('active');
     // linkDelete.classList.remove('active'); // Style is inline, so we just leave it
 
     // Show active
@@ -368,6 +292,9 @@ function showTab(tabName) {
     } else if (tabName === 'delete') {
         deleteTab.style.display = 'block';
         updateDeletePreview();
+    } else if (tabName === 'import') {
+        importTab.style.display = 'block';
+        linkImport.classList.add('active');
     }
 }
 
@@ -1149,3 +1076,584 @@ async function backupToFolder(dirHandle, criteria, updateProgress) {
 }
 
 
+
+// --- EXPORT LOGIC ---
+
+
+/**
+ * Setup Export UI Tabs
+ */
+function setupExportTabs() {
+    const btns = document.querySelectorAll('.export-nav .nav-btn');
+    btns.forEach(btn => {
+        btn.addEventListener('click', () => {
+            // Update Active State
+            btns.forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+
+            // Set Mode
+            currentExportMode = btn.dataset.mode;
+            updateExportUI();
+        });
+    });
+
+    // Zip Strategy Toggle logic
+    const zipToggleOptions = document.querySelectorAll('.zip-strategy-toggle .toggle-option');
+    const zipStrategyInput = document.getElementById('zip-strategy-value');
+
+    if (zipToggleOptions.length > 0) {
+        zipToggleOptions.forEach(opt => {
+            opt.addEventListener('click', () => {
+                // Remove active class from all
+                zipToggleOptions.forEach(o => o.classList.remove('active'));
+                // Add to clicked
+                opt.classList.add('active');
+
+                const val = opt.getAttribute('data-value');
+                if (zipStrategyInput) zipStrategyInput.value = val;
+
+                // Toggle settings visibility
+                const batchSettings = document.getElementById('zip-batch-settings');
+                const sizeSettings = document.getElementById('zip-size-settings');
+
+                if (batchSettings) batchSettings.style.display = val === 'batch' ? 'block' : 'none';
+                if (sizeSettings) sizeSettings.style.display = val === 'size' ? 'block' : 'none';
+            });
+        });
+    }
+
+    // Initial UI Update
+    updateExportUI();
+}
+
+/**
+ * Update UI Visibility based on Mode
+ */
+function updateExportUI() {
+    const title = document.getElementById('export-mode-title');
+    const updateBtn = document.getElementById('btn-export-text');
+
+    // Default Visibility
+    const groups = {
+        platform: document.getElementById('group-platform'),
+        user: document.getElementById('group-user'),
+        date: document.getElementById('group-date'),
+        newOnly: document.getElementById('group-new-only')
+    };
+
+    const opts = {
+        thumbnails: document.getElementById('opt-thumbnails'),
+        db: document.getElementById('opt-db'),
+        csv: document.getElementById('opt-csv')
+    };
+
+    // Helper: Show/Hide
+    const set = (el, show) => { if (el) el.style.display = show ? 'block' : 'none'; };
+
+    // Reset Specific Options
+    Object.values(opts).forEach(el => set(el, false));
+    if (groups.newOnly) groups.newOnly.style.display = 'none'; // Default hide
+
+    switch (currentExportMode) {
+        case 'users':
+            if (title) title.textContent = 'Export Users';
+            if (updateBtn) updateBtn.textContent = 'Export Users List';
+            set(groups.platform, true);
+            set(groups.user, false); // No user filter for Users export
+            set(groups.date, true);
+            set(groups.newOnly, true);
+            break;
+        case 'urls':
+            if (title) title.textContent = 'Export URLs';
+            if (updateBtn) updateBtn.textContent = 'Export URLs (TXT)';
+            set(groups.platform, true);
+            set(groups.user, true);
+            set(groups.date, true);
+            set(groups.newOnly, true);
+            break;
+        case 'thumbnails':
+            if (title) title.textContent = 'Export Thumbnails';
+            if (updateBtn) updateBtn.textContent = 'Export Thumbnails (ZIP)';
+            set(groups.platform, true);
+            set(groups.user, true);
+            set(groups.date, true);
+            set(opts.thumbnails, true);
+            set(groups.newOnly, true);
+            break;
+        case 'db':
+            if (title) title.textContent = 'Database Export';
+            if (updateBtn) updateBtn.textContent = 'Export Database';
+            set(groups.platform, false); // DB export is usually full or specific store
+            set(groups.user, false);
+            set(groups.date, false); // Maybe support date for Snapshot?
+            set(opts.db, true);
+            // newOnly might be useful for Snapshot mode, but DB export defines its own logic (Snapshot vs Full)
+            // So we hide general newOnly filter to avoid confusion.
+            set(groups.newOnly, false);
+
+            // DB specific listener for store select
+            const dbType = document.getElementById('db-export-type');
+            if (dbType) {
+                const storeSel = document.getElementById('db-store-select');
+                const handleDbType = () => {
+                    storeSel.style.display = dbType.value === 'single' ? 'block' : 'none';
+                };
+                dbType.removeEventListener('change', handleDbType); // Avoid dupes if called multiple times?
+                dbType.addEventListener('change', handleDbType);
+                handleDbType();
+            }
+            break;
+        case 'csv':
+            if (title) title.textContent = 'Export CSV';
+            if (updateBtn) updateBtn.textContent = 'Export Data (CSV)';
+            set(groups.platform, true);
+            set(groups.user, true);
+            set(groups.date, true);
+            set(opts.csv, true);
+            set(groups.newOnly, true);
+            break;
+    }
+
+    updateLivePreview();
+}
+
+/**
+ * Main Export Handler
+ */
+async function handleExportAction() {
+    const btn = document.getElementById('btn-run-export');
+    const originalText = btn.innerHTML;
+    const progressEl = document.getElementById('export-progress');
+
+    const setBusy = (msg) => {
+        btn.disabled = true;
+        btn.textContent = msg;
+        if (progressEl) {
+            progressEl.style.display = 'block';
+            progressEl.textContent = msg;
+        }
+    };
+
+    const setIdle = () => {
+        btn.disabled = false;
+        btn.innerHTML = originalText;
+        if (progressEl) progressEl.style.display = 'none';
+    };
+
+    try {
+        setBusy('Initializing...');
+
+        // Common Filters (where applicable)
+        const filters = getActiveFilters();
+
+        switch (currentExportMode) {
+            case 'users':
+                await exportUsers(filters);
+                break;
+            case 'urls':
+                await exportUrls(filters);
+                break;
+            case 'thumbnails':
+                await exportThumbnails(filters, setBusy); // Pass progress callback
+                break;
+            case 'db':
+                await exportDB(setBusy);
+                break;
+            case 'csv':
+                await exportCSV(filters);
+                break;
+        }
+
+    } catch (err) {
+        console.error("Export Failed:", err);
+        alert("Export Failed: " + err.message);
+    } finally {
+        setIdle();
+    }
+}
+
+function getActiveFilters() {
+    const pEl = document.getElementById('export-platform');
+    const uEl = document.getElementById('export-user');
+    const startEl = document.getElementById('export-date-start');
+    const endEl = document.getElementById('export-date-end');
+
+    const p = pEl ? pEl.value : 'ALL';
+    const u = uEl ? uEl.value : 'ALL';
+    const start = startEl ? startEl.value : null;
+    const end = endEl ? endEl.value : null;
+
+    // Parse dates to Timestamps (Start of Day, End of Day)
+    let sTime = null;
+    let eTime = null;
+
+    if (start) sTime = new Date(start).getTime();
+    if (end) {
+        const eDate = new Date(end);
+        eDate.setHours(23, 59, 59, 999);
+        eTime = eDate.getTime();
+    }
+
+    // If no end date, and user selected start date, implied single day? 
+    // Requirement says: "if no end choosen, then it can be consider as a one day only"
+    if (start && !end) {
+        const sDate = new Date(start);
+        // Requirement says "one day only". So end time should be end of THAT day.
+        sDate.setHours(23, 59, 59, 999);
+        eTime = sDate.getTime();
+    }
+
+    return {
+        platform: p,
+        userId: u,
+        startDate: sTime,
+        endDate: eTime,
+        // newOnly: document.getElementById('export-new-only').checked // Global toggle
+    };
+}
+
+// --- Specific Export Implementations ---
+
+async function exportUsers(filters) {
+    const users = await window.socialDB.getUniqueUsers(filters);
+    if (users.length === 0) throw new Error("No users found matching criteria.");
+
+    const text = users.join('\n');
+    const filename = `Users_${new Date().toISOString().split('T')[0]}.txt`;
+    downloadFile(text, filename, 'text/plain');
+}
+
+async function exportUrls(filters) {
+    const result = await window.socialDB.queryMedia(filters, 0, 500000); // High limit
+    if (result.items.length === 0) throw new Error("No items found.");
+
+    const text = result.items.map(m => m.originalUrl).join('\n');
+    const filename = `URLs_${new Date().toISOString().split('T')[0]}.txt`;
+    downloadFile(text, filename, 'text/plain');
+}
+
+async function exportCSV(filters) {
+    const result = await window.socialDB.queryMedia(filters, 0, 500000); // High limit
+    if (result.items.length === 0) throw new Error("No items found.");
+
+    const columns = getSelectedColumns();
+    const header = columns.map(c => formatColumnName(c)).join(',') + '\n';
+
+    const rows = result.items.map(m => {
+        return columns.map(col => {
+            let val = m[col] || '';
+            if (col === 'scrapedAt') val = new Date(val).toISOString();
+            const str = String(val).replace(/"/g, '""');
+            return `"${str}"`;
+        }).join(',');
+    }).join('\n');
+
+    const filename = `Export_${new Date().toISOString().split('T')[0]}.csv`;
+    downloadFile(header + rows, filename, 'text/csv');
+}
+
+async function exportThumbnails(filters, progressCallback) {
+    // 1. Get Matching Items
+    progressCallback('Querying DB...');
+    const result = await window.socialDB.queryMedia(filters, 0, 100000);
+    const total = result.items.length;
+    if (total === 0) throw new Error("No thumbnails found.");
+
+    // 2. Load JSZip
+    if (!window.JSZip) throw new Error("JSZip library not loaded.");
+
+    // 3. Settings
+    const strategyEl = document.querySelector('input[name="zip-strategy"]:checked');
+    const batchMode = strategyEl ? strategyEl.value === 'batch' : true;
+    const maxItems = parseInt(document.getElementById('zip-max-items').value) || 2000;
+    const maxSizeMB = parseInt(document.getElementById('zip-max-size').value) || 500;
+    const maxSizeBytes = maxSizeMB * 1024 * 1024;
+
+    let currentZip = new JSZip();
+    let currentCount = 0;
+    let currentSize = 0;
+    let zipIndex = 1;
+
+    const downloadZip = async (zip, idx) => {
+        const content = await zip.generateAsync({ type: "blob" });
+        const fname = `Thumbnails_Part${idx}.zip`;
+        const url = URL.createObjectURL(content);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = fname;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    };
+
+    for (let i = 0; i < total; i++) {
+        const item = result.items[i];
+        if (!item.thumbnailUrl) continue;
+
+        try {
+            // Fetch Blob (from Cache preferred)
+            const cached = await window.socialDB.getThumbnail(item.thumbnailUrl);
+            let blob = null;
+            if (cached && cached.blob) {
+                blob = cached.blob;
+            } else {
+                continue;
+            }
+
+            // Path: Platform/User/Image
+            let ext = 'jpg';
+            if (blob.type === 'image/webp') ext = 'webp';
+            else if (blob.type === 'image/png') ext = 'png';
+
+            const filename = `${item.platform}/${item.userId}/${item.videoId || i}.${ext}`;
+
+            currentZip.file(filename, blob);
+            currentCount++;
+            currentSize += blob.size;
+
+            progressCallback(`Zipping... ${i + 1}/${total}`);
+
+            // Check Limits
+            let flush = false;
+            if (batchMode && currentCount >= maxItems) flush = true;
+            if (!batchMode && currentSize >= maxSizeBytes) flush = true;
+
+            if (flush) {
+                progressCallback(`Downloading Batch ${zipIndex}...`);
+                await downloadZip(currentZip, zipIndex);
+                zipIndex++;
+                currentZip = new JSZip();
+                currentCount = 0;
+                currentSize = 0;
+            }
+        } catch (e) {
+            console.warn("Failed to zip item:", item, e);
+        }
+    }
+
+    // Final Flush
+    if (currentCount > 0) {
+        progressCallback(`Downloading Final Batch...`);
+        await downloadZip(currentZip, zipIndex);
+    }
+}
+
+async function exportDB(progressCallback) {
+    const type = document.getElementById('db-export-type').value;
+    const storeNameEl = document.getElementById('db-target-store');
+    const storeName = storeNameEl ? storeNameEl.value : 'media';
+
+    const stores = type === 'single' ? [storeName] : ['media', 'users', 'thumbnails', 'settings'];
+
+    // Helper to download JSON
+    const downloadJSON = (obj, name) => {
+        const blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = name;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    };
+
+    const MAX_CHUNK_ITEMS = 5000;
+
+    for (const store of stores) {
+        progressCallback(`Exporting Store: ${store}...`);
+
+        let offset = 0;
+        let fileIndex = 1;
+
+        while (true) {
+            // exportStore uses cursor.advance(offset). 
+            // So for next chunk, we just enable the loop logic. 
+            // Currently my storage.exportStore implementation does:
+            // if (offset > 0 && !advanced) { cursor.advance(offset); ... }
+            // So if I call it with offset=5000, it advances 5000.
+            // If I call it next with offset=10000, it advances 10000.
+            // So result will be correct.
+
+            const result = await window.socialDB.exportStore(store, offset, MAX_CHUNK_ITEMS);
+            const items = result.items;
+
+            if (items.length > 0) {
+                const dump = {
+                    type: 'SocialScraper_DB_Dump',
+                    version: 1,
+                    store: store,
+                    timestamp: Date.now(),
+                    items: items
+                };
+
+                const fname = `DB_${store}_Part${fileIndex}.json`;
+                downloadJSON(dump, fname);
+
+                fileIndex++;
+                offset += items.length;
+            }
+
+            if (!result.hasMore) break;
+            if (fileIndex > 200) break; // Safety
+        }
+    }
+}
+
+
+// --- IMPORT LOGIC ---
+
+function setupImportTab() {
+    const dropZone = document.getElementById('import-drop-zone');
+    const fileInput = document.getElementById('file-import-input');
+    const btnSelect = document.getElementById('btn-select-files');
+    const btnStart = document.getElementById('btn-start-import');
+
+    if (btnSelect) {
+        btnSelect.addEventListener('click', () => fileInput.click());
+    }
+
+    if (fileInput) {
+        fileInput.addEventListener('change', handleFileSelect);
+    }
+
+    if (dropZone) {
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.classList.add('border-blue-500');
+        });
+
+        dropZone.addEventListener('dragleave', () => {
+            dropZone.classList.remove('border-blue-500');
+        });
+
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('border-blue-500');
+            if (e.dataTransfer.files) {
+                fileInput.files = e.dataTransfer.files;
+                handleFileSelect({ target: fileInput });
+            }
+        });
+    }
+
+    if (btnStart) {
+        btnStart.addEventListener('click', handleImport);
+    }
+}
+
+function handleFileSelect(e) {
+    const files = e.target.files;
+    const btnStart = document.getElementById('btn-start-import');
+    const log = document.getElementById('import-log');
+
+    if (files.length > 0) {
+        if (btnStart) btnStart.disabled = false;
+        // Show selected files in drop zone or log?
+        const dropZoneH4 = document.querySelector('#import-drop-zone h4');
+        if (dropZoneH4) dropZoneH4.textContent = `${files.length} file(s) selected`;
+    } else {
+        if (btnStart) btnStart.disabled = true;
+    }
+}
+
+async function handleImport() {
+    const fileInput = document.getElementById('file-import-input');
+    const files = fileInput.files;
+    if (!files || files.length === 0) return;
+
+    const btnStart = document.getElementById('btn-start-import');
+    const progressContainer = document.getElementById('import-progress-container');
+    const progressBar = document.getElementById('import-progress-bar');
+    const statusText = document.getElementById('import-status-text');
+    const percentageText = document.getElementById('import-percentage');
+    const log = document.getElementById('import-log');
+    const mode = document.getElementById('import-mode').value;
+
+    if (btnStart) btnStart.disabled = true;
+    if (progressContainer) progressContainer.classList.remove('hidden');
+
+    const updateProgress = (pct, msg) => {
+        if (progressBar) progressBar.style.width = `${pct}%`;
+        if (statusText) statusText.textContent = msg;
+        if (percentageText) percentageText.textContent = `${Math.round(pct)}%`;
+    };
+
+    const addLog = (msg) => {
+        if (!log) return;
+        const p = document.createElement('div');
+        p.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+        log.appendChild(p);
+        log.scrollTop = log.scrollHeight;
+    };
+
+    let totalFiles = files.length;
+    let processedFiles = 0;
+    let totalItemsImported = 0;
+    let totalErrors = 0;
+
+    for (let i = 0; i < totalFiles; i++) {
+        const file = files[i];
+        updateProgress((processedFiles / totalFiles) * 100, `Processing ${file.name}...`);
+        addLog(`Reading ${file.name}...`);
+
+        try {
+            const text = await file.text();
+            let data;
+            try {
+                data = JSON.parse(text);
+            } catch (jsonErr) {
+                addLog(`Error parsing JSON in ${file.name}: ${jsonErr.message}`);
+                processedFiles++;
+                continue;
+            }
+
+            // Detect format
+            // Backup format: { type: 'SocialScraper_DB_Dump', store: '...', items: [...] }
+            // Or simple array of items?
+
+            let items = [];
+            let storeName = 'media'; // Default fallback
+
+            if (Array.isArray(data)) {
+                items = data;
+                addLog(`Detected simple array format. Assuming 'media' store.`);
+            } else if (data.items && Array.isArray(data.items)) {
+                items = data.items;
+                if (data.store) storeName = data.store;
+                addLog(`Detected Dump format. Target Store: ${storeName}`);
+            } else {
+                addLog(`Unknown format in ${file.name}. Skipping.`);
+                processedFiles++;
+                continue;
+            }
+
+            addLog(`Importing ${items.length} items into '${storeName}' (Mode: ${mode})...`);
+
+            // Perform Import
+            const result = await window.socialDB.importData(storeName, items, mode);
+
+            addLog(`Completed ${file.name}: Success=${result.success}, Errors=${result.errors}`);
+            totalItemsImported += result.success;
+            totalErrors += result.errors;
+
+        } catch (err) {
+            addLog(`Error processing ${file.name}: ${err.message}`);
+        }
+
+        processedFiles++;
+    }
+
+    updateProgress(100, 'Import Complete');
+    addLog(`All files processed. Total Imported: ${totalItemsImported}. Total Errors: ${totalErrors}.`);
+
+    if (btnStart) {
+        btnStart.disabled = false;
+        btnStart.textContent = "Import More";
+    }
+
+    // Refresh stats/data
+    await loadData();
+    renderStorageStats();
+}

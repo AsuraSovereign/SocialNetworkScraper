@@ -421,6 +421,16 @@ class StorageUtils {
                         if (m.userId !== criteria.userId) match = false;
                     }
 
+                    // Date Filter
+                    if (match && criteria.startDate) {
+                        if (!m.scrapedAt || m.scrapedAt < criteria.startDate) match = false;
+                    }
+                    if (match && criteria.endDate) {
+                        // End date should be inclusive, so we might need to exact end of day or just compare timestamp
+                        // Assuming caller passes timestamp or we handle it.
+                        if (!m.scrapedAt || m.scrapedAt > criteria.endDate) match = false;
+                    }
+
                     // 'New' means NOT exported
                     if (match && criteria.newOnly) {
                         if (m.exported === true) match = false;
@@ -454,8 +464,22 @@ class StorageUtils {
     /**
      * Get list of unique users (for filters)
      */
-    async getUniqueUsers(platform = null) {
+    async getUniqueUsers(criteria = {}) {
         await this.init();
+        // criteria can be string (platform) or object { platform, startDate, endDate }
+        // Backward compatibility
+        let platform = null;
+        let startDate = null;
+        let endDate = null;
+
+        if (typeof criteria === 'string') {
+            platform = criteria;
+        } else {
+            platform = criteria.platform;
+            startDate = criteria.startDate;
+            endDate = criteria.endDate;
+        }
+
         return new Promise((resolve, reject) => {
             const transaction = this.db.transaction(['media'], 'readonly');
             const store = transaction.objectStore('media');
@@ -467,7 +491,12 @@ class StorageUtils {
                 if (cursor) {
                     const m = cursor.value;
                     if (m.userId) {
-                        if (!platform || platform === 'ALL' || m.platform === platform) {
+                        let match = true;
+                        if (platform && platform !== 'ALL' && m.platform !== platform) match = false;
+                        if (startDate && (!m.scrapedAt || m.scrapedAt < startDate)) match = false;
+                        if (endDate && (!m.scrapedAt || m.scrapedAt > endDate)) match = false;
+
+                        if (match) {
                             users.add(m.userId);
                         }
                     }
@@ -507,6 +536,97 @@ class StorageUtils {
                 }
             };
             request.onerror = () => reject(request.error);
+        });
+    }
+
+    /**
+     * Export Store Data (Chunked)
+     */
+    async exportStore(storeName, offset = 0, limit = 1000) {
+        await this.init();
+        return new Promise((resolve, reject) => {
+            const transaction = this.db.transaction([storeName], 'readonly');
+            const store = transaction.objectStore(storeName);
+            const items = [];
+            let advanced = false;
+            let counter = 0;
+
+            const request = store.openCursor();
+            request.onsuccess = (e) => {
+                const cursor = e.target.result;
+                if (!cursor) {
+                    resolve({ items, hasMore: false });
+                    return;
+                }
+
+                if (!advanced && offset > 0) {
+                    advanced = true;
+                    cursor.advance(offset);
+                    return;
+                }
+
+                items.push(cursor.value);
+                counter++;
+
+                if (counter >= limit) {
+                    resolve({ items, hasMore: true });
+                } else {
+                    cursor.continue();
+                }
+            };
+            request.onerror = () => reject(request.error);
+        });
+    }
+
+    /**
+     * Import Data
+     * mode: 'overwrite' | 'merge' | 'skip'
+     */
+    async importData(storeName, data, mode = 'skip') {
+        await this.init();
+        return new Promise((resolve, reject) => {
+            const transaction = this.db.transaction([storeName], 'readwrite');
+            const store = transaction.objectStore(storeName);
+
+            let successCount = 0;
+            let errorCount = 0;
+
+            // Helper to put data
+            const putItem = (item) => {
+                try {
+                    store.put(item);
+                    successCount++;
+                } catch (e) {
+                    errorCount++;
+                }
+            };
+
+            const processItem = (item) => {
+                if (mode === 'overwrite') {
+                    putItem(item);
+                } else {
+                    // Check existence (Async check inside loop is tricky with simple forEach)
+                    // Better to just PUT for merge, or use add() for skip?
+                    // store.add() fails if key exists.
+                    if (mode === 'skip') {
+                        const req = store.add(item);
+                        req.onsuccess = () => successCount++;
+                        req.onerror = (e) => {
+                            e.preventDefault(); // Prevent transaction abort
+                            e.stopPropagation();
+                            // errorCount++; // Duplicate is not strictly an error in skip mode
+                        };
+                    } else if (mode === 'merge') {
+                        putItem(item); // Put overwrites, efficiently merging
+                    }
+                }
+            };
+
+            // Transaction-based loop
+            data.forEach(item => processItem(item));
+
+            transaction.oncomplete = () => resolve({ success: successCount, errors: errorCount });
+            transaction.onerror = (e) => reject(e.target.error);
         });
     }
 }

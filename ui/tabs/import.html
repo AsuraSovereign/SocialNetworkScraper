@@ -1,0 +1,58 @@
+<div class="card p-0">
+    <div class="card-header">
+        <h3 class="card-title">Import Data</h3>
+        <p class="text-sm text-gray-400">Restore your data from a previous backup or merge data from another source.</p>
+    </div>
+
+    <div class="card-body">
+        <!-- Import Zone -->
+        <div id="import-drop-zone"
+            class="border-2 border-dashed border-gray-600 rounded-lg p-8 text-center hover:border-blue-500 transition-colors cursor-pointer">
+            <div class="mb-4">
+                <i class="fas fa-file-upload text-4xl text-gray-400"></i>
+            </div>
+            <h4 class="text-lg font-medium text-white mb-2">Drop Database Files Here</h4>
+            <p class="text-sm text-gray-400 mb-4">or click to select files (JSON)</p>
+            <input type="file" id="file-import-input" multiple accept=".json" class="hidden">
+            <button id="btn-select-files" class="btn btn-secondary">Select Files</button>
+        </div>
+
+        <!-- Import Options -->
+        <div class="mt-6">
+            <h4 class="text-sm font-medium text-gray-300 mb-3">Import Options</h4>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div class="form-group">
+                    <label class="form-label">Conflict Resolution (Deduplication)</label>
+                    <select id="import-mode" class="form-input">
+                        <option value="skip">Skip Existing (Safest)</option>
+                        <option value="merge">Merge / Overwrite</option>
+                    </select>
+                    <p class="text-xs text-gray-500 mt-1">
+                        "Skip" will ignore items that already exist.<br>
+                        "Merge" will update existing items with new data.
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Progress -->
+        <div id="import-progress-container" class="mt-6 hidden">
+            <div class="flex justify-between text-sm mb-1">
+                <span id="import-status-text">Importing...</span>
+                <span id="import-percentage">0%</span>
+            </div>
+            <div class="w-full bg-gray-700 rounded-full h-2.5">
+                <div id="import-progress-bar" class="bg-blue-600 h-2.5 rounded-full" style="width: 0%"></div>
+            </div>
+            <div id="import-log"
+                class="mt-4 p-3 bg-gray-900 rounded text-xs text-gray-400 font-mono h-32 overflow-y-auto">
+            </div>
+        </div>
+    </div>
+
+    <div class="card-footer flex justify-end">
+        <button id="btn-start-import" class="btn btn-primary" disabled>
+            <i class="fas fa-upload mr-2"></i> Start Import
+        </button>
+    </div>
+</div>
