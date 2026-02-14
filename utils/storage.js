@@ -23,11 +23,6 @@ class StorageUtils {
             request.onupgradeneeded = (event) => {
                 const db = event.target.result;
 
-                // Users Store
-                if (!db.objectStoreNames.contains('users')) {
-                    db.createObjectStore('users', { keyPath: 'id' });
-                }
-
                 // Media Store
                 if (!db.objectStoreNames.contains('media')) {
                     const mediaStore = db.createObjectStore('media', { keyPath: 'id' });
@@ -35,9 +30,9 @@ class StorageUtils {
                     mediaStore.createIndex('userId', 'userId', { unique: false });
                 }
 
-                // Settings Store
-                if (!db.objectStoreNames.contains('settings')) {
-                    db.createObjectStore('settings', { keyPath: 'key' });
+                // Thumbnail Cache Store
+                if (!db.objectStoreNames.contains('thumbnails')) {
+                    db.createObjectStore('thumbnails', { keyPath: 'url' });
                 }
 
                 // Thumbnail Cache Store
@@ -433,7 +428,12 @@ class StorageUtils {
 
                     // 'New' means NOT exported
                     if (match && criteria.newOnly) {
-                        if (m.exported === true) match = false;
+                        // Resolve Flags
+                        let flags = m.exportFlags || 0;
+                        if (m.exported === true) flags |= StorageUtils.ExportFlags.ALL_EXPORT;
+
+                        const mask = criteria.excludeMask || 0;
+                        if ((flags & mask) !== 0) match = false;
                     }
 
                     if (match) {
@@ -496,6 +496,13 @@ class StorageUtils {
                         if (startDate && (!m.scrapedAt || m.scrapedAt < startDate)) match = false;
                         if (endDate && (!m.scrapedAt || m.scrapedAt > endDate)) match = false;
 
+                        if (match && criteria.newOnly) {
+                            let flags = m.exportFlags || 0;
+                            if (m.exported === true) flags |= StorageUtils.ExportFlags.ALL_EXPORT;
+                            const mask = criteria.excludeMask || 0;
+                            if ((flags & mask) !== 0) match = false;
+                        }
+
                         if (match) {
                             users.add(m.userId);
                         }
@@ -527,7 +534,16 @@ class StorageUtils {
                     let match = true;
                     if (criteria.platform && criteria.platform !== 'ALL' && m.platform !== criteria.platform) match = false;
                     if (criteria.userId && criteria.userId !== 'ALL' && m.userId !== criteria.userId) match = false;
-                    if (criteria.newOnly && m.exported) match = false;
+
+                    if (criteria.newOnly) {
+                        // Resolve Flags
+                        let flags = m.exportFlags || 0;
+                        if (m.exported === true) flags |= StorageUtils.ExportFlags.ALL_EXPORT; // Legacy fallback
+
+                        // Check mask
+                        const mask = criteria.excludeMask || 0; // Default to 0 if not provided (though newOnly implies we care)
+                        if ((flags & mask) !== 0) match = false;
+                    }
 
                     if (match) count++;
                     cursor.continue();
@@ -629,7 +645,64 @@ class StorageUtils {
             transaction.onerror = (e) => reject(e.target.error);
         });
     }
+
+    /**
+     * Mark items as exported with flags
+     * flags: Integer bitmask
+     */
+    async markAsExported(ids, flags) {
+        if (!flags) return; // No flags to set
+
+        await this.init();
+        return new Promise((resolve, reject) => {
+            const transaction = this.db.transaction(['media'], 'readwrite');
+            const store = transaction.objectStore('media');
+
+            ids.forEach(id => {
+                const req = store.get(id);
+                req.onsuccess = () => {
+                    const item = req.result;
+                    if (item) {
+                        // Initialize if undefined
+                        if (typeof item.exportFlags === 'undefined') item.exportFlags = 0;
+
+                        // Legacy Migration: If previously 'exported' is true, set ALL flags (or specific set)
+                        // For safety, let's treat legacy 'exported=true' as 'ALL_EXPORT' to avoid re-exporting old stuff unexpectedly
+                        if (item.exported === true) {
+                            item.exportFlags |= StorageUtils.ExportFlags.ALL_EXPORT;
+                            delete item.exported; // Cleanup legacy field
+                        }
+
+                        // Apply new flags
+                        item.exportFlags |= flags;
+
+                        store.put(item);
+                    }
+                };
+            });
+
+            transaction.oncomplete = () => resolve();
+            transaction.onerror = (e) => reject(e.target.error);
+        });
+    }
 }
+
+// Export Flags Constants
+StorageUtils.ExportFlags = {
+    VIEWED: 1 << 0, // 1
+    URLS: 1 << 1, // 2
+    USERS: 1 << 2, // 4
+    THUMBNAILS: 1 << 3, // 8
+    CSV: 1 << 4, // 16
+    DB: 1 << 5, // 32
+};
+// Helper for "All Export Modes" (excluding VIEWED)
+StorageUtils.ExportFlags.ALL_EXPORT =
+    StorageUtils.ExportFlags.URLS |
+    StorageUtils.ExportFlags.USERS |
+    StorageUtils.ExportFlags.THUMBNAILS |
+    StorageUtils.ExportFlags.CSV |
+    StorageUtils.ExportFlags.DB;
 
 // Global instance for Contexts (Window or Service Worker)
 (typeof self !== 'undefined' ? self : window).socialDB = new StorageUtils();

@@ -171,17 +171,7 @@ class TikTokScraper extends BaseScraper {
             this.showNotification(msg, "success");
         }
 
-        // Save User if new
-        chrome.runtime.sendMessage({
-            action: 'SAVE_DATA',
-            store: 'users',
-            data: {
-                id: topUser,
-                username: topUser,
-                platform: 'TikTok',
-                lastScrapedAt: Date.now()
-            }
-        });
+
 
         // Save Media Items with Thumbnails
         const mediaItems = itemsToSave.map(item => {

@@ -22,7 +22,8 @@ let deletePlatform, deleteUser, deleteCountParams;
 // State
 // Removed allMedia global to prevent memory crashes
 let cachePopulateBtn = null; // Reference to cache populate button
-let currentExportMode = 'users'; // Default mode
+let currentExportMode = 'urls'; // Default mode matching HTML active tab
+let newOnlyModeState = { users: false, urls: false, thumbnails: false, csv: false };
 
 // Init
 async function init() {
@@ -1174,6 +1175,33 @@ function setupExportTabs() {
         });
     }
 
+    // New Items Only Logic
+    const newOnlyToggle = document.getElementById('export-new-only');
+    const newOnlyGlobal = document.getElementById('export-new-only-global');
+
+    if (newOnlyToggle) {
+        newOnlyToggle.addEventListener('change', (e) => {
+            const val = e.target.checked;
+            newOnlyModeState[currentExportMode] = val;
+
+            // If global is checked, update all
+            if (newOnlyGlobal && newOnlyGlobal.checked) {
+                Object.keys(newOnlyModeState).forEach(k => newOnlyModeState[k] = val);
+            }
+            updateLivePreview();
+        });
+    }
+
+    if (newOnlyGlobal) {
+        newOnlyGlobal.addEventListener('change', (e) => {
+            if (e.target.checked) {
+                // Sync all to current
+                const currentVal = newOnlyModeState[currentExportMode];
+                Object.keys(newOnlyModeState).forEach(k => newOnlyModeState[k] = currentVal);
+            }
+        });
+    }
+
     // Initial UI Update
     updateExportUI();
 }
@@ -1204,7 +1232,14 @@ function updateExportUI() {
 
     // Reset Specific Options
     Object.values(opts).forEach(el => set(el, false));
-    if (groups.newOnly) groups.newOnly.style.display = 'none'; // Default hide
+    if (groups.newOnly) {
+        groups.newOnly.style.display = 'none'; // Default hide
+        // Set state based on mode
+        const toggle = document.getElementById('export-new-only');
+        if (toggle) {
+            toggle.checked = newOnlyModeState[currentExportMode] || false;
+        }
+    }
 
     switch (currentExportMode) {
         case 'users':
@@ -1363,13 +1398,35 @@ function getActiveFilters() {
         eTime = sDate.getTime();
     }
 
+    // Determine Exclude Mask for "New Only"
+    let excludeMask = 0;
+    if (newOnlyModeState[currentExportMode]) {
+        excludeMask = getExportFlag(currentExportMode);
+    }
+
     return {
         platform: p,
         userId: u,
         startDate: sTime,
         endDate: eTime,
-        newOnly: document.getElementById('export-new-only').checked
+        newOnly: newOnlyModeState[currentExportMode] || false,
+        excludeMask: excludeMask
     };
+}
+
+function getExportFlag(mode) {
+    // Access static flags from the instance constructor
+    const Flags = window.socialDB.constructor.ExportFlags;
+    if (!Flags) return 0;
+
+    switch (mode) {
+        case 'urls': return Flags.URLS;
+        case 'users': return Flags.USERS; // Note: Users export doesn't typically filter by media flags, but we can support it
+        case 'thumbnails': return Flags.THUMBNAILS;
+        case 'csv': return Flags.CSV;
+        case 'db': return Flags.DB;
+        default: return 0;
+    }
 }
 
 // --- Specific Export Implementations ---
@@ -1381,6 +1438,32 @@ async function exportUsers(filters) {
     const text = users.join('\n');
     const filename = `Users_${new Date().toISOString().split('T')[0]}.txt`;
     downloadFile(text, filename, 'text/plain');
+
+    // Mark media for these users as exported
+    // Determine flags
+    let flags = getExportFlag('users');
+    const globalApply = document.getElementById('export-new-only-global');
+    if (globalApply && globalApply.checked) {
+        flags = window.socialDB.constructor.ExportFlags.ALL_EXPORT;
+    }
+
+    // We need to find media IDs for these users to mark them
+    // This could be heavy if many users.
+    const BATCH_SIZE = 50;
+    for (let i = 0; i < users.length; i += BATCH_SIZE) {
+        const batch = users.slice(i, i + BATCH_SIZE);
+        const promises = batch.map(u => window.socialDB.queryMedia({ userId: u }, 0, 10000)); // limit per user?
+        const results = await Promise.all(promises);
+
+        let idsToMark = [];
+        results.forEach(res => {
+            if (res.items) res.items.forEach(item => idsToMark.push(item.id));
+        });
+
+        if (idsToMark.length > 0) {
+            await window.socialDB.markAsExported(idsToMark, flags);
+        }
+    }
 }
 
 async function exportUrls(filters) {
@@ -1390,6 +1473,18 @@ async function exportUrls(filters) {
     const text = result.items.map(m => m.originalUrl).join('\n');
     const filename = `URLs_${new Date().toISOString().split('T')[0]}.txt`;
     downloadFile(text, filename, 'text/plain');
+
+    // Mark as Exported
+    const ids = result.items.map(m => m.id);
+
+    // Determine flags
+    let flags = getExportFlag('urls');
+    const globalApply = document.getElementById('export-new-only-global');
+    if (globalApply && globalApply.checked) {
+        flags = window.socialDB.constructor.ExportFlags.ALL_EXPORT;
+    }
+
+    await window.socialDB.markAsExported(ids, flags);
 }
 
 async function exportCSV(filters) {
@@ -1413,6 +1508,18 @@ async function exportCSV(filters) {
 
     const filename = `Export_${new Date().toISOString().split('T')[0]}.csv`;
     downloadFile(header + rows, filename, 'text/csv');
+
+    // Mark as Exported
+    const ids = result.items.map(m => m.id);
+
+    // Determine flags
+    let flags = getExportFlag('csv');
+    const globalApply = document.getElementById('export-new-only-global');
+    if (globalApply && globalApply.checked) {
+        flags = window.socialDB.constructor.ExportFlags.ALL_EXPORT;
+    }
+
+    await window.socialDB.markAsExported(ids, flags);
 }
 
 async function exportThumbnails(filters, progressCallback) {
@@ -1500,6 +1607,17 @@ async function exportThumbnails(filters, progressCallback) {
         progressCallback(`Downloading Final Batch...`);
         await downloadZip(currentZip, zipIndex);
     }
+
+    // Mark all processed IDs as exported
+    if (mediaIds.length > 0) {
+        // Determine flags
+        let flags = getExportFlag('thumbnails');
+        const globalApply = document.getElementById('export-new-only-global');
+        if (globalApply && globalApply.checked) {
+            flags = window.socialDB.constructor.ExportFlags.ALL_EXPORT;
+        }
+        await window.socialDB.markAsExported(mediaIds, flags);
+    }
 }
 
 async function exportDB(progressCallback) {
@@ -1507,7 +1625,7 @@ async function exportDB(progressCallback) {
     const storeNameEl = document.getElementById('db-target-store');
     const storeName = storeNameEl ? storeNameEl.value : 'media';
 
-    const stores = type === 'single' ? [storeName] : ['media', 'users', 'thumbnails', 'settings'];
+    const stores = type === 'single' ? [storeName] : ['media', 'thumbnails'];
 
     // Helper to download JSON
     const downloadJSON = (obj, name) => {

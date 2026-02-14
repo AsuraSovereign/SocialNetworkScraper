@@ -56,6 +56,11 @@
                         </label>
                         <span style="font-size: 0.85rem; color: #fff;">Yes</span>
                     </div>
+                    <label
+                        style="display: flex; align-items: center; gap: 6px; font-size: 0.8rem; color: #aaa; margin-top: 5px; cursor: pointer;">
+                        <input type="checkbox" id="export-new-only-global" style="accent-color: #00f2ea;">
+                        <span>Apply to all modes</span>
+                    </label>
                 </div>
 
                 <!-- Date Range Filter -->
@@ -111,9 +116,7 @@
                         <label>Select Store</label>
                         <select id="db-target-store" class="modern-select">
                             <option value="media">Media</option>
-                            <option value="users">Users</option>
                             <option value="thumbnails">Thumbnails</option>
-                            <option value="settings">Settings</option>
                         </select>
                     </div>
                 </div>
@@ -150,7 +153,7 @@
             <!-- Primary Action Button -->
             <div style="margin-top: 25px;">
                 <button id="btn-run-export" class="btn-primary-large" style="width: 100%;">
-                    <span class="icon">⬇</span> <span id="btn-export-text">Export Users</span>
+                    <span class="icon">⬇</span> <span id="btn-export-text">Export URLs (TXT)</span>
                 </button>
                 <div id="export-progress" style="display: none; margin-top: 10px; color: #00f2ea;">
                     Processing... 0%
