@@ -1,5 +1,5 @@
 // Background Service Worker
-importScripts('utils/storage.js');
+importScripts("utils/storage.js");
 
 // Listen for messages from Content Scripts and Popup
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -11,13 +11,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 // --- Background Cache Population ---
 
 let isPopulating = false;
-const CACHE_STATE_KEY = 'cache_population_state';
+const CACHE_STATE_KEY = "cache_population_state";
 
 // State helper
 async function getPersistedState() {
     return new Promise((resolve) => {
         chrome.storage.local.get([CACHE_STATE_KEY], (result) => {
-            resolve(result[CACHE_STATE_KEY] || { status: 'IDLE', progress: 0, total: 0 });
+            resolve(result[CACHE_STATE_KEY] || { status: "IDLE", progress: 0, total: 0 });
         });
     });
 }
@@ -35,14 +35,14 @@ async function checkAndResume() {
     const state = await getPersistedState();
 
     // Resume if it was running
-    if (state.status === 'RUNNING') {
+    if (state.status === "RUNNING") {
         console.log("[Background] Resuming interrupted cache population from state:", state);
         startCachePopulation(true); // silent start
     } else {
         // Also check if we should auto-start on fresh install/startup logic?
         // Original code had auto-start on every startup.
         // Let's keep that but maybe be smarter.
-        // If IDLE, we can do a quick check? 
+        // If IDLE, we can do a quick check?
         // For now, preserving original behavior: run on startup.
         console.log("[Background] Startup check initiated.");
         startCachePopulation(true);
@@ -73,7 +73,7 @@ async function startCachePopulation(silent = false) {
         await socialDB.init();
 
         // Optimize: Use getAllKeys if possible in future.
-        const allMedia = await socialDB.getAll('media');
+        const allMedia = await socialDB.getAll("media");
         let processed = 0;
 
         const totalCandidates = allMedia.length;
@@ -86,7 +86,7 @@ async function startCachePopulation(silent = false) {
         const itemsToProcess = [];
 
         for (const media of allMedia) {
-            if (!media.thumbnailUrl || media.thumbnailUrl.startsWith('data:')) continue;
+            if (!media.thumbnailUrl || media.thumbnailUrl.startsWith("data:")) continue;
 
             // Check Cache
             const cached = await socialDB.getThumbnail(media.thumbnailUrl);
@@ -106,7 +106,7 @@ async function startCachePopulation(silent = false) {
         const total = itemsToProcess.length;
         console.log(`[Background] Found ${total} items needing cache update.`);
 
-        await setPersistedState(total > 0 ? 'RUNNING' : 'IDLE', 0, total);
+        await setPersistedState(total > 0 ? "RUNNING" : "IDLE", 0, total);
 
         if (total === 0) {
             // isPopulating = false; // WAIT! Keep true until we broadcast complete.
@@ -118,7 +118,7 @@ async function startCachePopulation(silent = false) {
             await broadcastProgress(0, 0, true);
 
             isPopulating = false;
-            await setPersistedState('IDLE', 0, 0);
+            await setPersistedState("IDLE", 0, 0);
 
             return { started: true, immediate: true };
         }
@@ -128,20 +128,19 @@ async function startCachePopulation(silent = false) {
             console.log("[Background] Queue processing finished.");
             // Wait a moment before broadcasting completion to ensure UI has received all progress updates
             // and to prevents race conditions where 'complete' arrives before 'progress'
-            await new Promise(r => setTimeout(r, 500));
+            await new Promise((r) => setTimeout(r, 500));
 
             await broadcastProgress(total, total, true);
             isPopulating = false;
-            await setPersistedState('IDLE', 0, 0);
+            await setPersistedState("IDLE", 0, 0);
         });
 
         return { started: true, immediate: false };
-
     } catch (err) {
         console.error("[Background] Cache population error:", err);
         // Ensure we reset state and notify UI of error/completion even on failure
         isPopulating = false;
-        await setPersistedState('IDLE', 0, 0);
+        await setPersistedState("IDLE", 0, 0);
 
         // Broadcast completion with error state implicitly (complete=true resets UI)
         setTimeout(() => broadcastProgress(0, 0, true), 100);
@@ -163,10 +162,10 @@ async function processQueue(items) {
             console.warn(`[Background] Failed to cache ${media.thumbnailUrl}`, e);
         }
 
-        await new Promise(r => setTimeout(r, 200)); // Throttle
+        await new Promise((r) => setTimeout(r, 200)); // Throttle
 
         await broadcastProgress(processed, total, processed === total);
-        await setPersistedState('RUNNING', processed, total);
+        await setPersistedState("RUNNING", processed, total);
     }
 }
 
@@ -183,7 +182,7 @@ async function fetchAndCache(url) {
             url: url,
             blob: blob,
             ttl: Date.now() + TTL,
-            error: false
+            error: false,
         });
     } catch (err) {
         // console.warn("Fetch error", err);
@@ -192,12 +191,11 @@ async function fetchAndCache(url) {
             url: url,
             blob: null,
             ttl: Date.now() + ERROR_TTL,
-            error: true
+            error: true,
         });
         throw err;
     }
 }
-
 
 async function broadcastProgress(current, total, complete = false) {
     // console.log(`[Background] Broadcasting progress: ${current}/${total}, complete: ${complete}`);
@@ -206,7 +204,7 @@ async function broadcastProgress(current, total, complete = false) {
             action: "CACHE_PROGRESS_UPDATE",
             current,
             total,
-            complete
+            complete,
         });
     } catch (e) {
         // This is expected if dashboard is closed
@@ -219,37 +217,31 @@ async function handleMessage(request, sender, sendResponse) {
         await socialDB.save(request.store, request.data);
         console.log(`Saved to ${request.store}`);
         sendResponse({ success: true });
-    }
-    else if (request.action === "SAVE_BATCH") {
+    } else if (request.action === "SAVE_BATCH") {
         await socialDB.saveAll(request.store, request.data);
         console.log(`Saved batch to ${request.store}`);
         sendResponse({ success: true });
-    }
-    else if (request.action === "OPEN_DASHBOARD") {
+    } else if (request.action === "OPEN_DASHBOARD") {
         openDashboard();
-    }
-    else if (request.action === "DOWNLOAD_MEDIA") {
+    } else if (request.action === "DOWNLOAD_MEDIA") {
         downloadMedia(request.payload);
-    }
-    else if (request.action === "START_CACHE_POPULATION") {
+    } else if (request.action === "START_CACHE_POPULATION") {
         startCachePopulation()
             .then(() => sendResponse({ started: true }))
-            .catch(err => sendResponse({ started: false, error: err.message }));
+            .catch((err) => sendResponse({ started: false, error: err.message }));
         return true; // Keep channel open
-    }
-    else if (request.action === "GET_CACHE_STATUS") {
+    } else if (request.action === "GET_CACHE_STATUS") {
         // Return current state (from memory or storage)
         if (isPopulating) {
             // If running, we can just return a generic "Running" or fetch latest calling getPersistedState
-            getPersistedState().then(state => {
-                sendResponse({ status: 'RUNNING', progress: state.progress, total: state.total });
+            getPersistedState().then((state) => {
+                sendResponse({ status: "RUNNING", progress: state.progress, total: state.total });
             });
         } else {
-            sendResponse({ status: 'IDLE' });
+            sendResponse({ status: "IDLE" });
         }
         return true;
-    }
-    else {
+    } else {
         // console.log("Unknown action:", request.action);
     }
 }
@@ -257,14 +249,17 @@ async function handleMessage(request, sender, sendResponse) {
 function downloadMedia(payload) {
     if (!payload || !payload.url) return;
 
-    chrome.downloads.download({
-        url: payload.url,
-        saveAs: false // Download immediately
-    }, (downloadId) => {
-        if (chrome.runtime.lastError) {
-            console.error("Download failed:", chrome.runtime.lastError);
-        } else {
-            console.log("Download started:", downloadId);
-        }
-    });
+    chrome.downloads.download(
+        {
+            url: payload.url,
+            saveAs: false, // Download immediately
+        },
+        (downloadId) => {
+            if (chrome.runtime.lastError) {
+                console.error("Download failed:", chrome.runtime.lastError);
+            } else {
+                console.log("Download started:", downloadId);
+            }
+        },
+    );
 }
