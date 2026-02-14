@@ -814,44 +814,93 @@ function getSelectedColumns() {
 
 // --- LIVE PREVIEW ---
 async function updateLivePreview() {
-    // Optimization: queryMedia allows limit. We only need top 3.
-    const pFilter = exportPlatform.value;
-    const uFilter = exportUser.value;
-    const newOnly = exportNewOnly.checked;
-
-    const criteria = {
-        platform: pFilter,
-        userId: uFilter,
-        newOnly: newOnly
-    };
-
-    const result = await window.socialDB.queryMedia(criteria, 0, 3);
-    const data = result.items;
-
-    const columns = getSelectedColumns();
+    const filters = getActiveFilters();
     const table = document.getElementById('preview-table');
+    const placeholder = document.getElementById('preview-placeholder');
     const thead = table.querySelector('thead');
     const tbody = table.querySelector('tbody');
 
-    // Headers
-    thead.innerHTML = '<tr>' + columns.map(col => `<th>${formatColumnName(col)}</th>`).join('') + '</tr>';
-
-    // Rows
+    // Reset Table
+    thead.innerHTML = '';
     tbody.innerHTML = '';
-    if (data.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="${columns.length}" style="text-align:center; color:#888;">No data matches filter</td></tr>`;
+
+    let columns = [];
+    let rows = []; // Array of html strings or arrays of cell html
+
+    try {
+        if (currentExportMode === 'users') {
+            const users = await window.socialDB.getUniqueUsers(filters);
+            const displayUsers = users.slice(0, 10);
+
+            columns = ['Username'];
+            displayUsers.forEach(u => {
+                rows.push([`<td title="${u}">${u}</td>`]);
+            });
+
+            if (users.length > 10) {
+                rows.push([`<td style="text-align:center; color:#888; font-style:italic;">...and ${users.length - 10} more</td>`]);
+            }
+
+        } else if (currentExportMode === 'urls') {
+            const result = await window.socialDB.queryMedia(filters, 0, 10);
+
+            columns = ['Video URL', 'Date Scraped'];
+            result.items.forEach(m => {
+                const val = m.originalUrl || '';
+                const date = m.scrapedAt ? new Date(m.scrapedAt).toLocaleString() : '';
+                rows.push([
+                    `<td title="${val}" style="max-width: 300px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${val}</td>`,
+                    `<td>${date}</td>`
+                ]);
+            });
+
+        } else if (currentExportMode === 'csv') {
+            // CSV Mode (Dynamic Columns)
+            const rawCols = getSelectedColumns();
+            if (rawCols.length === 0) {
+                // Should not happen as checkboxes are checked by default
+                columns = ['Info'];
+                rows.push(['<td style="color:#888;">No columns selected</td>']);
+            } else {
+                columns = rawCols.map(c => formatColumnName(c));
+                const result = await window.socialDB.queryMedia(filters, 0, 10);
+
+                result.items.forEach(item => {
+                    const rowCells = rawCols.map(col => {
+                        let val = item[col] || '';
+                        if (col === 'scrapedAt') val = new Date(val).toLocaleString();
+                        return `<td title="${val}">${val}</td>`;
+                    });
+                    rows.push(rowCells);
+                });
+            }
+        }
+    } catch (e) {
+        console.error("Preview Error:", e);
+        if (placeholder) {
+            placeholder.textContent = "Error loading preview";
+            placeholder.style.display = 'block';
+        }
+        table.style.display = 'none';
         return;
     }
 
-    data.forEach(item => {
-        const tr = document.createElement('tr');
-        tr.innerHTML = columns.map(col => {
-            let val = item[col] || '';
-            if (col === 'scrapedAt') val = new Date(val).toLocaleString();
-            return `<td title="${val}">${val}</td>`;
-        }).join('');
-        tbody.appendChild(tr);
-    });
+    // Render
+    const hasData = rows.length > 0;
+
+    if (!hasData) {
+        if (placeholder) {
+            placeholder.innerHTML = 'No data matches filter';
+            placeholder.style.display = 'block';
+        }
+        table.style.display = 'none';
+    } else {
+        if (placeholder) placeholder.style.display = 'none';
+        table.style.display = 'table';
+
+        thead.innerHTML = '<tr>' + columns.map(c => `<th>${c}</th>`).join('') + '</tr>';
+        tbody.innerHTML = rows.map(r => `<tr>${r.join('')}</tr>`).join('');
+    }
 }
 
 function formatColumnName(col) {
@@ -1214,7 +1263,15 @@ function updateExportUI() {
             break;
     }
 
-    updateLivePreview();
+    // Toggle Preview Visibility
+    const previewCard = document.getElementById('export-preview-card');
+    if (previewCard) {
+        const showPreview = ['users', 'urls', 'csv'].includes(currentExportMode);
+        previewCard.style.display = showPreview ? 'block' : 'none';
+        if (showPreview) updateLivePreview();
+    } else {
+        updateLivePreview();
+    }
 }
 
 /**
@@ -1308,7 +1365,7 @@ function getActiveFilters() {
         userId: u,
         startDate: sTime,
         endDate: eTime,
-        // newOnly: document.getElementById('export-new-only').checked // Global toggle
+        newOnly: document.getElementById('export-new-only').checked
     };
 }
 
