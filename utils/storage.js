@@ -184,6 +184,19 @@ class StorageUtils {
 
     async saveThumbnail(data) {
         await this.init();
+
+        // Smart Compression Strategy
+        if (data.blob && data.blob.size > 0) {
+            try {
+                const compressed = await this.compressImage(data.blob);
+                if (compressed.size < data.blob.size) {
+                    data.blob = compressed;
+                }
+            } catch (e) {
+                console.warn("[Storage] Compression skipped:", e);
+            }
+        }
+
         return new Promise((resolve, reject) => {
             const transaction = this.db.transaction(['thumbnails'], 'readwrite');
             const store = transaction.objectStore('thumbnails');
@@ -192,6 +205,43 @@ class StorageUtils {
             request.onsuccess = () => resolve();
             request.onerror = () => reject(request.error);
         });
+    }
+
+    /**
+     * Smart Compression using OffscreenCanvas
+     * Tries to convert to WebP high quality. Returns original if new is larger or error.
+     */
+    async compressImage(blob) {
+        // Feature detection
+        if (typeof createImageBitmap === 'undefined' || typeof OffscreenCanvas === 'undefined') {
+            return blob;
+        }
+
+        try {
+            const bitmap = await createImageBitmap(blob);
+            const { width, height } = bitmap;
+            const canvas = new OffscreenCanvas(width, height);
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(bitmap, 0, 0);
+
+            // Encode to WebP at 95% quality (Visual Lossless)
+            const compressedBlob = await canvas.convertToBlob({
+                type: 'image/webp',
+                quality: 1
+            });
+
+            // Clean up
+            bitmap.close();
+
+            // Only use if smaller
+            if (compressedBlob.size < blob.size) {
+                return compressedBlob;
+            }
+            return blob;
+
+        } catch (err) {
+            return blob;
+        }
     }
 
     async deleteThumbnail(url) {
