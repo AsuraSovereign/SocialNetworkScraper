@@ -2,13 +2,11 @@
  * Stats Tab Logic
  */
 
-let cachePopulateBtn = null;
-
 export function initStats() {
-    // Initial Render
+    // Run setup once when the app initializes
+    setupCacheButtons();
+    setupCacheProgressListener();
     renderStats();
-
-    // Setup Listeners if needed (mostly internal to renderStats which is called on tab switch)
 }
 
 export async function renderStats() {
@@ -26,15 +24,13 @@ export async function renderStats() {
     document.getElementById("stat-total-users").textContent = users;
     document.getElementById("stat-last-active").textContent = lastScrape;
 
-    // Populate User Filter (Shared with other tabs, but managed here as it's part of stats loading usually)
+    // Populate User Filter
     const userList = await window.socialDB.getUniqueUsers();
-
-    // Helpers to populate selects in other tabs
     populateSelect("filter-user", userList);
     populateSelect("export-user", userList);
     populateSelect("delete-user", userList);
 
-    setupCacheButtons();
+    // Sync button state with current background process
     checkCacheStatus();
     renderStorageStats();
 }
@@ -54,104 +50,97 @@ function populateSelect(id, userList) {
 }
 
 function setupCacheButtons() {
-    const btnPopulateVal = document.getElementById("btn-populate-cache");
-    const btnClearVal = document.getElementById("btn-clear-cache");
+    const btn = document.getElementById("btn-populate-cache");
+    if (!btn) return;
 
-    if (btnPopulateVal) {
-        // Clone to remove old listeners
-        cachePopulateBtn = btnPopulateVal.cloneNode(true);
-        btnPopulateVal.parentNode.replaceChild(cachePopulateBtn, btnPopulateVal);
+    // Direct listener attachment (no cloning needed as this runs once)
+    btn.addEventListener("click", () => {
+        // 1. Immediate Feedback
+        updateButtonState("REQUESTING");
 
-        cachePopulateBtn.addEventListener("click", () => {
-            cachePopulateBtn.disabled = true;
-            cachePopulateBtn.textContent = "Requesting...";
+        // 2. Send Command
+        chrome.runtime.sendMessage({ action: "START_CACHE_POPULATION" }, (response) => {
+            // 3. Handle Communication Errors ONLY
+            if (chrome.runtime.lastError) {
+                console.error(chrome.runtime.lastError);
+                updateButtonState("ERROR");
+                return;
+            }
 
-            chrome.runtime.sendMessage({ action: "START_CACHE_POPULATION" }, (response) => {
-                if (chrome.runtime.lastError) {
-                    cachePopulateBtn.textContent = "Failed";
-                    cachePopulateBtn.disabled = false;
-                    console.error(chrome.runtime.lastError);
-                    setTimeout(() => {
-                        cachePopulateBtn.textContent = "Populate Cache";
-                    }, 2000);
-                } else if (response && response.started) {
-                    if (response.immediate) {
-                        console.log("Cache population completed immediately.");
-                        setTimeout(() => {
-                            if (cachePopulateBtn.textContent === "Requesting...") {
-                                cachePopulateBtn.textContent = "Populate Cache";
-                                cachePopulateBtn.disabled = false;
-                            }
-                        }, 500);
-                    } else {
-                        cachePopulateBtn.textContent = "Starting...";
-                    }
-                } else {
-                    cachePopulateBtn.textContent = "Error";
-                    cachePopulateBtn.disabled = false;
-                    if (response && response.error) {
-                        alert("Error: " + response.error);
-                    }
-                }
-            });
+            if (response && response.error) {
+                alert("Error: " + response.error);
+                updateButtonState("ERROR");
+                return;
+            }
+
+            // 4. On Success: Do NOTHING.
+            // We rely on the "CACHE_PROGRESS_UPDATE" message to update the UI.
+            // This prevents race conditions between this callback and the broadcast.
         });
-    }
-
-    if (btnClearVal) {
-        const newBtn = btnClearVal.cloneNode(true);
-        btnClearVal.parentNode.replaceChild(newBtn, btnClearVal);
-
-        newBtn.addEventListener("click", async () => {
-            alert("Functionality is currently disabled");
-        });
-    }
+    });
 }
 
 export function setupCacheProgressListener() {
-    console.log("[Dashboard] Setting up cache progress listener");
-    chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    chrome.runtime.onMessage.addListener((request) => {
         if (request.action === "CACHE_PROGRESS_UPDATE") {
             const { current, total, complete } = request;
 
-            if (!cachePopulateBtn) {
-                // If button isn't localized yet, try to find it
-                const btn = document.getElementById("btn-populate-cache");
-                if (btn) cachePopulateBtn = btn;
-                else return;
-            }
-
             if (complete) {
-                cachePopulateBtn.textContent = "Populate Cache";
-                cachePopulateBtn.disabled = false;
-                renderStorageStats();
+                updateButtonState("IDLE");
+                renderStorageStats(); // Refresh stats when done
             } else {
-                cachePopulateBtn.disabled = true;
-                cachePopulateBtn.textContent = `Populating... (${current}/${total})`;
+                updateButtonState("RUNNING", { current, total });
             }
         }
     });
 }
 
 export function checkCacheStatus() {
-    if (!cachePopulateBtn) {
-        const btn = document.getElementById("btn-populate-cache");
-        if (btn) cachePopulateBtn = btn;
-        else return;
-    }
-
     chrome.runtime.sendMessage({ action: "GET_CACHE_STATUS" }, (response) => {
         if (chrome.runtime.lastError) return;
+
         if (response && response.status === "RUNNING") {
-            cachePopulateBtn.disabled = true;
-            cachePopulateBtn.textContent = `Populating... (${response.progress}/${response.total})`;
+            updateButtonState("RUNNING", { current: response.progress, total: response.total });
+        } else {
+            // Only force IDLE if we are sure it's not requesting
+            const btn = document.getElementById("btn-populate-cache");
+            if (btn && btn.textContent !== "Requesting...") {
+                updateButtonState("IDLE");
+            }
         }
     });
+}
+
+/**
+ * Centralized Button State Manager
+ */
+function updateButtonState(state, data = {}) {
+    const btn = document.getElementById("btn-populate-cache");
+    if (!btn) return;
+
+    switch (state) {
+        case "IDLE":
+            btn.textContent = "Populate Cache";
+            btn.disabled = false;
+            break;
+        case "REQUESTING":
+            btn.textContent = "Requesting...";
+            btn.disabled = true;
+            break;
+        case "RUNNING":
+            btn.textContent = `Populating... (${data.current}/${data.total})`;
+            btn.disabled = true;
+            break;
+        case "ERROR":
+            btn.textContent = "Failed (Retry)";
+            btn.disabled = false;
+            break;
+    }
 }
 
 export async function renderStorageStats() {
     try {
         const stats = await window.socialDB.getStorageUsage();
-
         const formatSize = (bytes) => {
             if (bytes === 0) return "0 B";
             const k = 1024;
