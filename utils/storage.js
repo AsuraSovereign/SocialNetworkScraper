@@ -12,6 +12,7 @@ class StorageUtils {
         this._CACHE_KEY = "socialScraper_stats_data";
         this._DIRTY_KEY = "socialScraper_stats_dirty";
         this._STATS_KEY = "socialScraper_detailed_stats";
+        this._CALC_STATUS_KEY = "socialScraper_calc_status";
         this._CACHE_TTL = 5 * 60 * 1000; // 5 minutes
     }
 
@@ -24,12 +25,10 @@ class StorageUtils {
         } catch (_) {
             /* localStorage unavailable (service worker) — no-op */
         }
-        // Also invalidate via chrome.storage.local (accessible from service worker)
-        try {
-            chrome.storage.local.set({ [this._DIRTY_KEY]: true });
-        } catch (_) {
-            /* chrome.storage unavailable */
-        }
+        // Note: We intentionally do NOT invalidate chrome.storage.local detailed stats here.
+        // Detailed stats have their own TTL and are recalculated on demand.
+        // Setting dirty in chrome.storage.local on every write caused a race condition
+        // where cache population writes prevented detailed stats from ever being used.
     }
 
     /**
@@ -463,19 +462,24 @@ class StorageUtils {
         });
 
         // 4. Merge any previously calculated detailed stats from chrome.storage.local
+        // Note: Detailed stats have their own TTL via _cachedAt, independent of dirty flag.
+        // The dirty flag is for the fast localStorage cache only.
         try {
-            const stored = await new Promise((r) => chrome.storage.local.get([this._STATS_KEY, this._DIRTY_KEY], (res) => r(res)));
+            const stored = await new Promise((r) => chrome.storage.local.get([this._STATS_KEY], (res) => r(res)));
             const detailed = stored[this._STATS_KEY];
-            const isDirty = stored[this._DIRTY_KEY];
 
-            if (detailed && !isDirty && detailed._cachedAt && Date.now() - detailed._cachedAt < this._CACHE_TTL) {
+            if (detailed && detailed._cachedAt && Date.now() - detailed._cachedAt < this._CACHE_TTL) {
                 // Merge sizes into current fast result
                 result.totalSizeBytes = detailed.totalSizeBytes;
                 result.thumbnailSizeBytes = detailed.thumbnailSizeBytes;
+                console.log("[Storage] Merged cached detailed stats into result.");
             } else {
                 // Fire-and-forget: ask background to calculate sizes
+                console.log("[Storage] Detailed stats missing or stale, requesting background calculation...");
                 try {
-                    chrome.runtime.sendMessage({ action: "CALCULATE_STATS" });
+                    chrome.runtime.sendMessage({ action: "CALCULATE_STATS" }, () => {
+                        void chrome.runtime.lastError; // Suppress channel closed error
+                    });
                 } catch (_) {
                     /* background unavailable */
                 }
@@ -500,11 +504,20 @@ class StorageUtils {
      * Detailed Size Calculation (Chunked, Non-Blocking)
      * Runs in the background service worker. Iterates all records in chunks,
      * yielding between chunks to prevent blocking the event loop.
+     * Reports progress every 10% via chrome.storage.local and console.
      * Results are written to chrome.storage.local for reactive UI pickup.
      */
     async calculateDetailedStats() {
         if (this._isCalculating) return;
         this._isCalculating = true;
+
+        const setStatus = (state, progress) => {
+            try {
+                chrome.storage.local.set({ [this._CALC_STATUS_KEY]: { state, progress } });
+            } catch (_) {
+                /* no-op */
+            }
+        };
 
         try {
             await this.init();
@@ -519,9 +532,44 @@ class StorageUtils {
                 }
             };
 
+            // Get total counts for progress tracking
+            const idbCount = (storeName) =>
+                new Promise((resolve, reject) => {
+                    const tx = this.db.transaction([storeName], "readonly");
+                    const req = tx.objectStore(storeName).count();
+                    req.onsuccess = () => resolve(req.result);
+                    req.onerror = () => reject(req.error);
+                });
+
+            const [totalMedia, totalThumbs] = await Promise.all([idbCount("media"), idbCount("thumbnails")]);
+            const grandTotal = totalMedia + totalThumbs;
+
+            if (grandTotal === 0) {
+                setStatus("COMPLETE", 100);
+                console.log("[Storage] No items to calculate sizes for.");
+                this._isCalculating = false;
+                return { totalSizeBytes: 0, thumbnailSizeBytes: 0, mediaSizeBytes: 0, _cachedAt: Date.now() };
+            }
+
+            let processed = 0;
+            let lastReportedPct = -1;
+
+            const reportProgress = () => {
+                const pct = Math.floor((processed / grandTotal) * 100);
+                const bucket = Math.floor(pct / 10) * 10; // Round down to nearest 10
+                if (bucket > lastReportedPct) {
+                    lastReportedPct = bucket;
+                    setStatus("CALCULATING", bucket);
+                    console.log(`[Storage] Stats calculation progress: ${bucket}% (${processed}/${grandTotal})`);
+                }
+            };
+
+            // Initial status
+            setStatus("CALCULATING", 0);
+            console.log(`[Storage] Starting size calculation: ${grandTotal} items (${totalMedia} media + ${totalThumbs} thumbnails)`);
+
             // --- Phase 1: Media size ---
             let mediaSize = 0;
-            let mediaProcessed = 0;
 
             await new Promise((resolve, reject) => {
                 const tx = this.db.transaction(["media"], "readonly");
@@ -532,10 +580,10 @@ class StorageUtils {
                     const cursor = e.target.result;
                     if (cursor) {
                         mediaSize += getSize(cursor.value);
-                        mediaProcessed++;
+                        processed++;
+                        reportProgress();
 
-                        if (mediaProcessed % CHUNK_SIZE === 0) {
-                            // Yield to event loop
+                        if (processed % CHUNK_SIZE === 0) {
                             setTimeout(() => cursor.continue(), YIELD_MS);
                         } else {
                             cursor.continue();
@@ -549,7 +597,6 @@ class StorageUtils {
 
             // --- Phase 2: Thumbnail size ---
             let thumbSize = 0;
-            let thumbProcessed = 0;
 
             await new Promise((resolve, reject) => {
                 const tx = this.db.transaction(["thumbnails"], "readonly");
@@ -561,9 +608,10 @@ class StorageUtils {
                     if (cursor) {
                         const t = cursor.value;
                         thumbSize += t.blob && t.blob.size ? t.blob.size : getSize(t);
-                        thumbProcessed++;
+                        processed++;
+                        reportProgress();
 
-                        if (thumbProcessed % CHUNK_SIZE === 0) {
+                        if (processed % CHUNK_SIZE === 0) {
                             setTimeout(() => cursor.continue(), YIELD_MS);
                         } else {
                             cursor.continue();
@@ -575,7 +623,7 @@ class StorageUtils {
                 req.onerror = () => reject(req.error);
             });
 
-            // --- Phase 3: Persist to chrome.storage.local ---
+            // --- Phase 3: Persist results ---
             const detailedStats = {
                 totalSizeBytes: mediaSize + thumbSize,
                 thumbnailSizeBytes: thumbSize,
@@ -587,16 +635,17 @@ class StorageUtils {
                 chrome.storage.local.set(
                     {
                         [this._STATS_KEY]: detailedStats,
-                        [this._DIRTY_KEY]: false,
+                        [this._CALC_STATUS_KEY]: { state: "COMPLETE", progress: 100 },
                     },
                     r,
                 ),
             );
 
-            console.log(`[Storage] Detailed stats calculated: media=${mediaSize}, thumbs=${thumbSize}, total=${mediaSize + thumbSize}`);
+            console.log(`[Storage] Stats calculation complete: media=${mediaSize}, thumbs=${thumbSize}, total=${mediaSize + thumbSize}`);
             return detailedStats;
         } catch (err) {
             console.error("[Storage] calculateDetailedStats error:", err);
+            setStatus("ERROR", 0);
             throw err;
         } finally {
             this._isCalculating = false;

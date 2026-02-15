@@ -3,6 +3,7 @@
  */
 
 const _STATS_KEY = "socialScraper_detailed_stats";
+const _CALC_STATUS_KEY = "socialScraper_calc_status";
 
 export function initStats() {
     // Run setup once when the app initializes
@@ -19,10 +20,21 @@ export function initStats() {
 function setupStorageChangeListener() {
     try {
         chrome.storage.onChanged.addListener((changes, area) => {
-            if (area === "local" && changes[_STATS_KEY]) {
+            if (area !== "local") return;
+
+            // Reactive size update when calculation completes
+            if (changes[_STATS_KEY]) {
                 const detailed = changes[_STATS_KEY].newValue;
                 if (detailed && detailed.totalSizeBytes != null) {
                     updateSizeDisplay(detailed);
+                }
+            }
+
+            // Progress update during calculation
+            if (changes[_CALC_STATUS_KEY]) {
+                const status = changes[_CALC_STATUS_KEY].newValue;
+                if (status && status.state === "CALCULATING") {
+                    updateCalcProgress(status.progress);
                 }
             }
         });
@@ -50,6 +62,18 @@ function updateSizeDisplay(detailed) {
 
     set("stat-db-usage", formatSize(detailed.totalSizeBytes));
     set("stat-thumb-usage", `Thumbnails: ${formatSize(detailed.thumbnailSizeBytes)}`);
+}
+
+/**
+ * Update size labels with progress percentage during calculation.
+ */
+function updateCalcProgress(pct) {
+    const set = (id, txt) => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = txt;
+    };
+    set("stat-db-usage", `Calculating... (${pct}%)`);
+    set("stat-thumb-usage", `Thumbnails: Calculating... (${pct}%)`);
 }
 
 export async function renderStats() {
