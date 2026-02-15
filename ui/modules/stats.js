@@ -2,11 +2,54 @@
  * Stats Tab Logic
  */
 
+const _STATS_KEY = "socialScraper_detailed_stats";
+
 export function initStats() {
     // Run setup once when the app initializes
     setupCacheButtons();
     setupCacheProgressListener();
+    setupStorageChangeListener();
     renderStats();
+}
+
+/**
+ * Listen for chrome.storage.local changes to reactively update size stats
+ * when the background finishes calculating detailed stats.
+ */
+function setupStorageChangeListener() {
+    try {
+        chrome.storage.onChanged.addListener((changes, area) => {
+            if (area === "local" && changes[_STATS_KEY]) {
+                const detailed = changes[_STATS_KEY].newValue;
+                if (detailed && detailed.totalSizeBytes != null) {
+                    updateSizeDisplay(detailed);
+                }
+            }
+        });
+    } catch (_) {
+        /* chrome.storage unavailable */
+    }
+}
+
+/**
+ * Update only the size-related DOM elements (called reactively).
+ */
+function updateSizeDisplay(detailed) {
+    const formatSize = (bytes) => {
+        if (bytes == null || bytes === 0) return "0 B";
+        const k = 1024;
+        const sizes = ["B", "KB", "MB", "GB"];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
+    };
+
+    const set = (id, txt) => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = txt;
+    };
+
+    set("stat-db-usage", formatSize(detailed.totalSizeBytes));
+    set("stat-thumb-usage", `Thumbnails: ${formatSize(detailed.thumbnailSizeBytes)}`);
 }
 
 export async function renderStats() {
@@ -142,7 +185,7 @@ export async function renderStorageStats() {
     try {
         const stats = await window.socialDB.getStorageUsage();
         const formatSize = (bytes) => {
-            if (bytes == null || bytes === 0) return "N/A";
+            if (bytes == null || bytes === 0) return "0 B";
             const k = 1024;
             const sizes = ["B", "KB", "MB", "GB"];
             const i = Math.floor(Math.log(bytes) / Math.log(k));
@@ -154,8 +197,9 @@ export async function renderStorageStats() {
             if (el) el.textContent = txt;
         };
 
-        set("stat-db-usage", stats.totalSizeBytes != null ? formatSize(stats.totalSizeBytes) : `${stats.counts.totalVideos} items`);
-        set("stat-thumb-usage", stats.thumbnailSizeBytes != null ? `Thumbnails: ${formatSize(stats.thumbnailSizeBytes)}` : `Thumbnails: ${stats.counts.totalThumbnails || 0} cached`);
+        // Show "Calculating..." when sizes are pending, otherwise show actual sizes
+        set("stat-db-usage", stats.totalSizeBytes != null ? formatSize(stats.totalSizeBytes) : "Calculating...");
+        set("stat-thumb-usage", stats.thumbnailSizeBytes != null ? `Thumbnails: ${formatSize(stats.thumbnailSizeBytes)}` : "Thumbnails: Calculating...");
         set("stat-top-user", stats.topUser.userId !== "None" ? stats.topUser.userId : "-");
         set("stat-top-user-size", stats.topUser.count != null ? `Items: ${stats.topUser.count}` : stats.topUser.size != null ? `Size: ${formatSize(stats.topUser.size)}` : "");
         set("stat-cache-count", stats.counts.cachedThumbnails);

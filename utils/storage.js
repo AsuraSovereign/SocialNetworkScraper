@@ -8,8 +8,10 @@ class StorageUtils {
     constructor() {
         this.db = null;
         this._initPromise = null;
+        this._isCalculating = false;
         this._CACHE_KEY = "socialScraper_stats_data";
         this._DIRTY_KEY = "socialScraper_stats_dirty";
+        this._STATS_KEY = "socialScraper_detailed_stats";
         this._CACHE_TTL = 5 * 60 * 1000; // 5 minutes
     }
 
@@ -21,6 +23,12 @@ class StorageUtils {
             localStorage.setItem(this._DIRTY_KEY, "true");
         } catch (_) {
             /* localStorage unavailable (service worker) — no-op */
+        }
+        // Also invalidate via chrome.storage.local (accessible from service worker)
+        try {
+            chrome.storage.local.set({ [this._DIRTY_KEY]: true });
+        } catch (_) {
+            /* chrome.storage unavailable */
         }
     }
 
@@ -310,13 +318,13 @@ class StorageUtils {
 
     /**
      * Metrics Calculation (Estimated Stats - O(1) Counts)
-     * Uses IDB count() for fast item counts instead of iterating every record.
-     * Uses localStorage to cache results. Cache is invalidated on any write.
+     * Returns fast counts immediately. Detailed size stats are calculated
+     * asynchronously in the background and merged when available.
      */
     async getStorageUsage(forceRefresh = false) {
         await this.init();
 
-        // 1. Check Cache (dirty flag + 5-min TTL)
+        // 1. Check localStorage cache (dirty flag + 5-min TTL)
         if (!forceRefresh) {
             try {
                 const dirty = localStorage.getItem(this._DIRTY_KEY);
@@ -334,7 +342,7 @@ class StorageUtils {
             }
         }
 
-        // 2. Estimated Stats using O(1) count() + lightweight cursor for user stats
+        // 2. Fast O(1) counts
         const idbCount = (store) =>
             new Promise((resolve, reject) => {
                 const req = store.count();
@@ -346,10 +354,9 @@ class StorageUtils {
         const mediaStore = transaction.objectStore("media");
         const thumbStore = transaction.objectStore("thumbnails");
 
-        // O(1) counts
         const [totalMediaCount, totalThumbCount] = await Promise.all([idbCount(mediaStore), idbCount(thumbStore)]);
 
-        // Lightweight cursor for user stats and cache health (still needed for accurate breakdown)
+        // 3. Lightweight cursor for user stats and cache health
         const result = await new Promise((resolve, reject) => {
             const uniqueUsers = new Set();
             const userItemCounts = {};
@@ -358,7 +365,6 @@ class StorageUtils {
             const now = Date.now();
             const urlRefCounts = new Map();
 
-            // Phase 1: Scan media for user stats and thumbnail URL refs
             const mediaCursorReq = mediaStore.openCursor();
 
             mediaCursorReq.onsuccess = (e) => {
@@ -383,7 +389,6 @@ class StorageUtils {
 
                     cursor.continue();
                 } else {
-                    // Phase 2: Lightweight thumbnail scan for cache health
                     scanThumbnails();
                 }
             };
@@ -424,7 +429,6 @@ class StorageUtils {
 
                         cursor.continue();
                     } else {
-                        // Finalize
                         let topUser = { userId: "None", count: 0 };
                         for (const [userId, count] of Object.entries(userItemCounts)) {
                             if (count > topUser.count) {
@@ -435,7 +439,7 @@ class StorageUtils {
                         const videosMissing = Math.max(0, totalMediaCount - invalidThumbCount - cachedMediaCount - expiredMediaCount - failedMediaCount);
 
                         resolve({
-                            totalSizeBytes: null, // Size estimation removed for performance
+                            totalSizeBytes: null, // Populated async by calculateDetailedStats
                             thumbnailSizeBytes: null,
                             topUser: topUser,
                             counts: {
@@ -458,7 +462,29 @@ class StorageUtils {
             }
         });
 
-        // 3. Persist to cache with timestamp
+        // 4. Merge any previously calculated detailed stats from chrome.storage.local
+        try {
+            const stored = await new Promise((r) => chrome.storage.local.get([this._STATS_KEY, this._DIRTY_KEY], (res) => r(res)));
+            const detailed = stored[this._STATS_KEY];
+            const isDirty = stored[this._DIRTY_KEY];
+
+            if (detailed && !isDirty && detailed._cachedAt && Date.now() - detailed._cachedAt < this._CACHE_TTL) {
+                // Merge sizes into current fast result
+                result.totalSizeBytes = detailed.totalSizeBytes;
+                result.thumbnailSizeBytes = detailed.thumbnailSizeBytes;
+            } else {
+                // Fire-and-forget: ask background to calculate sizes
+                try {
+                    chrome.runtime.sendMessage({ action: "CALCULATE_STATS" });
+                } catch (_) {
+                    /* background unavailable */
+                }
+            }
+        } catch (_) {
+            /* chrome.storage unavailable (e.g. content script context) */
+        }
+
+        // 5. Persist fast results to localStorage cache
         try {
             result._cachedAt = Date.now();
             localStorage.setItem(this._CACHE_KEY, JSON.stringify(result));
@@ -468,6 +494,113 @@ class StorageUtils {
         }
 
         return result;
+    }
+
+    /**
+     * Detailed Size Calculation (Chunked, Non-Blocking)
+     * Runs in the background service worker. Iterates all records in chunks,
+     * yielding between chunks to prevent blocking the event loop.
+     * Results are written to chrome.storage.local for reactive UI pickup.
+     */
+    async calculateDetailedStats() {
+        if (this._isCalculating) return;
+        this._isCalculating = true;
+
+        try {
+            await this.init();
+
+            const CHUNK_SIZE = 500;
+            const YIELD_MS = 10;
+            const getSize = (obj) => {
+                try {
+                    return JSON.stringify(obj).length * 2;
+                } catch (_) {
+                    return 0;
+                }
+            };
+
+            // --- Phase 1: Media size ---
+            let mediaSize = 0;
+            let mediaProcessed = 0;
+
+            await new Promise((resolve, reject) => {
+                const tx = this.db.transaction(["media"], "readonly");
+                const store = tx.objectStore("media");
+                const req = store.openCursor();
+
+                req.onsuccess = (e) => {
+                    const cursor = e.target.result;
+                    if (cursor) {
+                        mediaSize += getSize(cursor.value);
+                        mediaProcessed++;
+
+                        if (mediaProcessed % CHUNK_SIZE === 0) {
+                            // Yield to event loop
+                            setTimeout(() => cursor.continue(), YIELD_MS);
+                        } else {
+                            cursor.continue();
+                        }
+                    } else {
+                        resolve();
+                    }
+                };
+                req.onerror = () => reject(req.error);
+            });
+
+            // --- Phase 2: Thumbnail size ---
+            let thumbSize = 0;
+            let thumbProcessed = 0;
+
+            await new Promise((resolve, reject) => {
+                const tx = this.db.transaction(["thumbnails"], "readonly");
+                const store = tx.objectStore("thumbnails");
+                const req = store.openCursor();
+
+                req.onsuccess = (e) => {
+                    const cursor = e.target.result;
+                    if (cursor) {
+                        const t = cursor.value;
+                        thumbSize += t.blob && t.blob.size ? t.blob.size : getSize(t);
+                        thumbProcessed++;
+
+                        if (thumbProcessed % CHUNK_SIZE === 0) {
+                            setTimeout(() => cursor.continue(), YIELD_MS);
+                        } else {
+                            cursor.continue();
+                        }
+                    } else {
+                        resolve();
+                    }
+                };
+                req.onerror = () => reject(req.error);
+            });
+
+            // --- Phase 3: Persist to chrome.storage.local ---
+            const detailedStats = {
+                totalSizeBytes: mediaSize + thumbSize,
+                thumbnailSizeBytes: thumbSize,
+                mediaSizeBytes: mediaSize,
+                _cachedAt: Date.now(),
+            };
+
+            await new Promise((r) =>
+                chrome.storage.local.set(
+                    {
+                        [this._STATS_KEY]: detailedStats,
+                        [this._DIRTY_KEY]: false,
+                    },
+                    r,
+                ),
+            );
+
+            console.log(`[Storage] Detailed stats calculated: media=${mediaSize}, thumbs=${thumbSize}, total=${mediaSize + thumbSize}`);
+            return detailedStats;
+        } catch (err) {
+            console.error("[Storage] calculateDetailedStats error:", err);
+            throw err;
+        } finally {
+            this._isCalculating = false;
+        }
     }
 
     /**

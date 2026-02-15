@@ -209,6 +209,15 @@ async function handleMessage(request, sender, sendResponse) {
             sendResponse({ status: "IDLE" });
         }
         return true;
+    } else if (request.action === "CALCULATE_STATS") {
+        socialDB
+            .calculateDetailedStats()
+            .then(() => sendResponse({ success: true }))
+            .catch((err) => {
+                console.error("[Background] Stats calculation failed:", err);
+                sendResponse({ success: false, error: err.message });
+            });
+        return true;
     }
 }
 
