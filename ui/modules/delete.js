@@ -2,6 +2,8 @@
  * Delete Tab Logic
  */
 
+import { sanitizeFilename } from "./utils.js";
+
 export function initDelete() {
     const deletePlatform = document.getElementById("delete-platform");
     const deleteUser = document.getElementById("delete-user");
@@ -179,9 +181,9 @@ async function backupToFolder(dirHandle, criteria, updateProgress) {
                         let ext = "jpg";
                         if (blob.type) ext = blob.type.split("/")[1] || "jpg";
 
-                        const safeUserId = (media.userId || "unknown").replace(/[^a-z0-9]/gi, "_");
-                        const safeId = (media.id || "unknown").replace(/[^a-z0-9]/gi, "_");
-                        const filename = `${media.platform}_${safeUserId}_${safeId}.${ext}`;
+                        const safeUserId = sanitizeFilename(media.userId || "unknown");
+                        const safeId = sanitizeFilename(media.id || "unknown");
+                        const filename = `${sanitizeFilename(media.platform)}_${safeUserId}_${safeId}.${ext}`;
 
                         const imgFileHandle = await imagesHandle.getFileHandle(filename, { create: true });
                         const imgWritable = await imgFileHandle.createWritable();

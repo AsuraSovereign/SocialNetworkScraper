@@ -174,6 +174,15 @@ async function broadcastProgress(current, total, complete = false) {
 }
 
 async function handleMessage(request, sender, sendResponse) {
+    // Ensure DB is ready before any operation
+    try {
+        await socialDB.init();
+    } catch (err) {
+        console.error("[Background] DB init failed in handler:", err);
+        sendResponse({ success: false, error: "DB initialization failed" });
+        return;
+    }
+
     if (request.action === "SAVE_DATA") {
         await socialDB.save(request.store, request.data);
         console.log(`Saved to ${request.store}`);
@@ -201,6 +210,10 @@ async function handleMessage(request, sender, sendResponse) {
         }
         return true;
     }
+}
+
+function openDashboard() {
+    chrome.tabs.create({ url: chrome.runtime.getURL("ui/dashboard.html") });
 }
 
 function downloadMedia(payload) {

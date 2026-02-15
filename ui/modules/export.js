@@ -3,7 +3,7 @@
  */
 
 import { newOnlyModeState, currentExportMode, setCurrentExportMode } from "./state.js";
-import { formatColumnName, downloadFile, generateExportFilename } from "./utils.js";
+import { formatColumnName, downloadFile, generateExportFilename, sanitizeFilename } from "./utils.js";
 
 export function initExport() {
     setupExportTabs();
@@ -519,7 +519,7 @@ async function exportThumbnails(filters, progressCallback) {
             if (blob.type === "image/webp") ext = "webp";
             else if (blob.type === "image/png") ext = "png";
 
-            const filename = `${item.platform}/${item.userId}/${item.videoId || i}.${ext}`;
+            const filename = `${sanitizeFilename(item.platform)}/${sanitizeFilename(item.userId)}/${sanitizeFilename(item.videoId || String(i))}.${ext}`;
             currentZip.file(filename, blob);
 
             mediaIds.push(item.id);
@@ -536,6 +536,7 @@ async function exportThumbnails(filters, progressCallback) {
                 progressCallback(`Downloading Batch ${zipIndex}...`);
                 await downloadZip(currentZip, zipIndex);
                 zipIndex++;
+                currentZip = null; // Explicit dereference for GC
                 currentZip = new JSZip();
                 currentCount = 0;
                 currentSize = 0;
@@ -549,6 +550,9 @@ async function exportThumbnails(filters, progressCallback) {
         progressCallback(`Downloading Final Batch...`);
         await downloadZip(currentZip, zipIndex);
     }
+
+    // Explicit dereference for GC
+    currentZip = null;
 
     if (mediaIds.length > 0) {
         let flags = getExportFlag("thumbnails");

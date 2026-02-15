@@ -142,7 +142,7 @@ export async function renderStorageStats() {
     try {
         const stats = await window.socialDB.getStorageUsage();
         const formatSize = (bytes) => {
-            if (bytes === 0) return "0 B";
+            if (bytes == null || bytes === 0) return "N/A";
             const k = 1024;
             const sizes = ["B", "KB", "MB", "GB"];
             const i = Math.floor(Math.log(bytes) / Math.log(k));
@@ -154,16 +154,17 @@ export async function renderStorageStats() {
             if (el) el.textContent = txt;
         };
 
-        set("stat-db-usage", formatSize(stats.totalSizeBytes));
-        set("stat-thumb-usage", `Thumbnails: ${formatSize(stats.thumbnailSizeBytes)}`);
+        set("stat-db-usage", stats.totalSizeBytes != null ? formatSize(stats.totalSizeBytes) : `${stats.counts.totalVideos} items`);
+        set("stat-thumb-usage", stats.thumbnailSizeBytes != null ? `Thumbnails: ${formatSize(stats.thumbnailSizeBytes)}` : `Thumbnails: ${stats.counts.totalThumbnails || 0} cached`);
         set("stat-top-user", stats.topUser.userId !== "None" ? stats.topUser.userId : "-");
-        set("stat-top-user-size", `Size: ${formatSize(stats.topUser.size)}`);
+        set("stat-top-user-size", stats.topUser.count != null ? `Items: ${stats.topUser.count}` : stats.topUser.size != null ? `Size: ${formatSize(stats.topUser.size)}` : "");
         set("stat-cache-count", stats.counts.cachedThumbnails);
         set("stat-cache-missing", stats.counts.videosNotCached);
         set("stat-cache-expired", stats.counts.expiredThumbnails);
+        set("stat-cache-failed", stats.counts.failedThumbnails);
         set("stat-cache-invalid", stats.counts.invalidThumbnails);
-        set("stat-cache-orphaned", stats.counts.orphanedThumbnails > 0 ? `${stats.counts.orphanedThumbnails} (${formatSize(stats.counts.orphanedSize)})` : "0");
-        set("stat-cache-duplicates", stats.counts.duplicateThumbnails > 0 ? `${stats.counts.duplicateThumbnails} (${formatSize(stats.counts.duplicateSize)})` : "0");
+        set("stat-cache-orphaned", stats.counts.orphanedThumbnails > 0 ? `${stats.counts.orphanedThumbnails}` : "0");
+        set("stat-cache-duplicates", stats.counts.duplicateThumbnails != null && stats.counts.duplicateThumbnails > 0 ? `${stats.counts.duplicateThumbnails}` : "0");
     } catch (err) {
         console.error("Error rendering storage stats:", err);
     }

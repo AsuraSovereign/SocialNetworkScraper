@@ -47,3 +47,18 @@ export function showPlaceholder(thumbDiv, media, msg = null) {
         </div>
     `;
 }
+
+/**
+ * Sanitize a string for use as a filename.
+ * Removes characters that are invalid in Windows/Mac/Linux filenames.
+ */
+export function sanitizeFilename(str) {
+    if (!str) return "unknown";
+    return (
+        str
+            .replace(/[\/\\:*?"<>|]/g, "_")
+            .replace(/\s+/g, "_")
+            .replace(/_+/g, "_")
+            .replace(/^_|_$/g, "") || "unknown"
+    );
+}

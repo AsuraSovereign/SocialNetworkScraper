@@ -7,8 +7,10 @@ const DB_VERSION = 2;
 class StorageUtils {
     constructor() {
         this.db = null;
+        this._initPromise = null;
         this._CACHE_KEY = "socialScraper_stats_data";
         this._DIRTY_KEY = "socialScraper_stats_dirty";
+        this._CACHE_TTL = 5 * 60 * 1000; // 5 minutes
     }
 
     /**
@@ -41,11 +43,15 @@ class StorageUtils {
     async init() {
         if (this.db) return;
 
-        return new Promise((resolve, reject) => {
+        // Singleton promise: if init is already in-flight, return the same promise
+        if (this._initPromise) return this._initPromise;
+
+        this._initPromise = new Promise((resolve, reject) => {
             const request = indexedDB.open(DB_NAME, DB_VERSION);
 
             request.onerror = (event) => {
                 console.error("IndexedDB error:", event.target.error);
+                this._initPromise = null; // Allow retry on failure
                 reject(event.target.error);
             };
 
@@ -63,11 +69,6 @@ class StorageUtils {
                 if (!db.objectStoreNames.contains("thumbnails")) {
                     db.createObjectStore("thumbnails", { keyPath: "url" });
                 }
-
-                // Thumbnail Cache Store
-                if (!db.objectStoreNames.contains("thumbnails")) {
-                    db.createObjectStore("thumbnails", { keyPath: "url" });
-                }
             };
 
             request.onsuccess = (event) => {
@@ -75,6 +76,8 @@ class StorageUtils {
                 resolve(this.db);
             };
         });
+
+        return this._initPromise;
     }
 
     /**
@@ -259,6 +262,11 @@ class StorageUtils {
             return blob;
         }
 
+        // Guard: only attempt compression on image blobs
+        if (!blob.type || !blob.type.startsWith("image/")) {
+            return blob;
+        }
+
         try {
             const bitmap = await createImageBitmap(blob);
             const { width, height } = bitmap;
@@ -301,62 +309,66 @@ class StorageUtils {
     }
 
     /**
-     * Metrics Calculation (Smart Cached + Integrity Scan)
+     * Metrics Calculation (Estimated Stats - O(1) Counts)
+     * Uses IDB count() for fast item counts instead of iterating every record.
      * Uses localStorage to cache results. Cache is invalidated on any write.
      */
     async getStorageUsage(forceRefresh = false) {
         await this.init();
 
-        // 1. Check Cache
+        // 1. Check Cache (dirty flag + 5-min TTL)
         if (!forceRefresh) {
             try {
                 const dirty = localStorage.getItem(this._DIRTY_KEY);
                 if (dirty === "false") {
                     const cached = localStorage.getItem(this._CACHE_KEY);
-                    if (cached) return JSON.parse(cached);
+                    if (cached) {
+                        const parsed = JSON.parse(cached);
+                        if (parsed._cachedAt && Date.now() - parsed._cachedAt < this._CACHE_TTL) {
+                            return parsed;
+                        }
+                    }
                 }
             } catch (_) {
                 /* localStorage unavailable */
             }
         }
 
-        // 2. Full Scan Required
-        const getSize = (obj) => JSON.stringify(obj).length * 2;
+        // 2. Estimated Stats using O(1) count() + lightweight cursor for user stats
+        const idbCount = (store) =>
+            new Promise((resolve, reject) => {
+                const req = store.count();
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error);
+            });
 
+        const transaction = this.db.transaction(["media", "thumbnails"], "readonly");
+        const mediaStore = transaction.objectStore("media");
+        const thumbStore = transaction.objectStore("thumbnails");
+
+        // O(1) counts
+        const [totalMediaCount, totalThumbCount] = await Promise.all([idbCount(mediaStore), idbCount(thumbStore)]);
+
+        // Lightweight cursor for user stats and cache health (still needed for accurate breakdown)
         const result = await new Promise((resolve, reject) => {
-            const transaction = this.db.transaction(["media", "thumbnails"], "readonly");
-            const mediaStore = transaction.objectStore("media");
-            const thumbStore = transaction.objectStore("thumbnails");
-
-            let mediaSize = 0;
-            let thumbSize = 0;
-            let invalidThumbCount = 0;
-            let cachedThumbCount = 0;
-            let expiredThumbCount = 0;
-            let orphanedCount = 0;
-            let orphanedSize = 0;
-            const userUsage = {};
-            let totalMediaCount = 0;
-
             const uniqueUsers = new Set();
+            const userItemCounts = {};
             let lastScrapeTime = 0;
+            let invalidThumbCount = 0;
             const now = Date.now();
+            const urlRefCounts = new Map();
 
-            // Phase 1: Build reference set of active thumbnail URLs from media
-            const activeThumbnailUrls = new Set();
-            const mediaCursorRequest = mediaStore.openCursor();
+            // Phase 1: Scan media for user stats and thumbnail URL refs
+            const mediaCursorReq = mediaStore.openCursor();
 
-            mediaCursorRequest.onsuccess = (e) => {
+            mediaCursorReq.onsuccess = (e) => {
                 const cursor = e.target.result;
                 if (cursor) {
                     const m = cursor.value;
-                    totalMediaCount++;
 
                     if (m.userId) {
                         uniqueUsers.add(m.userId);
-                        const size = getSize(m);
-                        mediaSize += size;
-                        userUsage[m.userId] = (userUsage[m.userId] || 0) + size;
+                        userItemCounts[m.userId] = (userItemCounts[m.userId] || 0) + 1;
                     }
 
                     if (m.scrapedAt && m.scrapedAt > lastScrapeTime) {
@@ -366,113 +378,89 @@ class StorageUtils {
                     if (!m.thumbnailUrl || m.thumbnailUrl.startsWith("data:")) {
                         invalidThumbCount++;
                     } else {
-                        activeThumbnailUrls.add(m.thumbnailUrl);
+                        urlRefCounts.set(m.thumbnailUrl, (urlRefCounts.get(m.thumbnailUrl) || 0) + 1);
                     }
 
                     cursor.continue();
                 } else {
-                    // Phase 2: Scan thumbnails
-                    processThumbnails();
+                    // Phase 2: Lightweight thumbnail scan for cache health
+                    scanThumbnails();
                 }
             };
 
-            mediaCursorRequest.onerror = () => reject(mediaCursorRequest.error);
+            mediaCursorReq.onerror = () => reject(mediaCursorReq.error);
 
-            function processThumbnails() {
-                const seenHashes = new Map(); // hash -> first URL
-                let duplicateCount = 0;
-                let duplicateSize = 0;
-                const thumbsToHash = []; // collect for async hashing after cursor
+            function scanThumbnails() {
+                let cachedMediaCount = 0;
+                let expiredMediaCount = 0;
+                let failedMediaCount = 0;
+                let orphanedCount = 0;
 
-                const thumbCursorRequest = thumbStore.openCursor();
+                const thumbCursorReq = thumbStore.openCursor();
 
-                thumbCursorRequest.onsuccess = (e) => {
+                thumbCursorReq.onsuccess = (e) => {
                     const cursor = e.target.result;
                     if (cursor) {
                         const t = cursor.value;
-                        cachedThumbCount++;
+                        const refCount = urlRefCounts.get(t.url);
 
-                        const blobSize = t.blob && t.blob.size ? t.blob.size : getSize(t);
-
-                        if (t.ttl && t.ttl < now) {
-                            expiredThumbCount++;
-                        }
-
-                        thumbSize += blobSize;
-
-                        // Orphan check: thumbnail URL not referenced by any media
-                        if (!activeThumbnailUrls.has(t.url)) {
+                        if (refCount) {
+                            if (t.error) {
+                                if (t.ttl && t.ttl < now) {
+                                    expiredMediaCount += refCount;
+                                } else {
+                                    failedMediaCount += refCount;
+                                }
+                            } else {
+                                if (t.ttl && t.ttl < now) {
+                                    expiredMediaCount += refCount;
+                                } else {
+                                    cachedMediaCount += refCount;
+                                }
+                            }
+                        } else {
                             orphanedCount++;
-                            orphanedSize += blobSize;
-                        }
-
-                        // Collect blob for duplicate hashing
-                        if (t.blob && t.blob.size) {
-                            thumbsToHash.push({ url: t.url, blob: t.blob, size: blobSize });
                         }
 
                         cursor.continue();
                     } else {
-                        // Cursor done — run async duplicate detection
-                        detectDuplicates(thumbsToHash, seenHashes, duplicateCount, duplicateSize);
+                        // Finalize
+                        let topUser = { userId: "None", count: 0 };
+                        for (const [userId, count] of Object.entries(userItemCounts)) {
+                            if (count > topUser.count) {
+                                topUser = { userId, count };
+                            }
+                        }
+
+                        const videosMissing = Math.max(0, totalMediaCount - invalidThumbCount - cachedMediaCount - expiredMediaCount - failedMediaCount);
+
+                        resolve({
+                            totalSizeBytes: null, // Size estimation removed for performance
+                            thumbnailSizeBytes: null,
+                            topUser: topUser,
+                            counts: {
+                                totalVideos: totalMediaCount,
+                                totalUsers: uniqueUsers.size,
+                                totalThumbnails: totalThumbCount,
+                                lastScraped: lastScrapeTime,
+                                cachedThumbnails: cachedMediaCount,
+                                invalidThumbnails: invalidThumbCount,
+                                expiredThumbnails: expiredMediaCount,
+                                failedThumbnails: failedMediaCount,
+                                videosNotCached: videosMissing,
+                                orphanedThumbnails: orphanedCount,
+                            },
+                        });
                     }
                 };
 
-                thumbCursorRequest.onerror = () => reject(thumbCursorRequest.error);
-
-                async function detectDuplicates(thumbs, seen, dupCount, dupSize) {
-                    try {
-                        const instance = (typeof self !== "undefined" ? self : window).socialDB;
-                        for (const t of thumbs) {
-                            const hash = await instance._computeContentHash(t.blob);
-                            if (hash) {
-                                if (seen.has(hash)) {
-                                    dupCount++;
-                                    dupSize += t.size;
-                                } else {
-                                    seen.set(hash, t.url);
-                                }
-                            }
-                        }
-                    } catch (_) {
-                        /* hashing unavailable */
-                    }
-
-                    finalize(dupCount, dupSize);
-                }
-            }
-
-            function finalize(duplicateCount, duplicateSize) {
-                let topUser = { userId: "None", size: 0 };
-                for (const [userId, size] of Object.entries(userUsage)) {
-                    if (size > topUser.size) {
-                        topUser = { userId, size };
-                    }
-                }
-
-                resolve({
-                    totalSizeBytes: mediaSize + thumbSize,
-                    thumbnailSizeBytes: thumbSize,
-                    topUser: topUser,
-                    counts: {
-                        totalVideos: totalMediaCount,
-                        totalUsers: uniqueUsers.size,
-                        lastScraped: lastScrapeTime,
-                        cachedThumbnails: cachedThumbCount,
-                        invalidThumbnails: invalidThumbCount,
-                        expiredThumbnails: expiredThumbCount,
-                        videosNotCached: Math.max(0, totalMediaCount - cachedThumbCount),
-                        orphanedThumbnails: orphanedCount,
-                        orphanedSize: orphanedSize,
-                        duplicateThumbnails: duplicateCount,
-                        duplicateSize: duplicateSize,
-                    },
-                });
+                thumbCursorReq.onerror = () => reject(thumbCursorReq.error);
             }
         });
 
-        // 3. Persist to cache
+        // 3. Persist to cache with timestamp
         try {
+            result._cachedAt = Date.now();
             localStorage.setItem(this._CACHE_KEY, JSON.stringify(result));
             localStorage.setItem(this._DIRTY_KEY, "false");
         } catch (_) {
