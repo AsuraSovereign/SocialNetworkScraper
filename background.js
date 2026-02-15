@@ -74,10 +74,6 @@ async function startCachePopulation(silent = false) {
 
         // Optimize: Use getAllKeys if possible in future.
         const allMedia = await socialDB.getAll("media");
-        let processed = 0;
-
-        const totalCandidates = allMedia.length;
-        let queued = 0;
         const now = Date.now();
 
         // We need to identify items to process to know if we are done immediately.
