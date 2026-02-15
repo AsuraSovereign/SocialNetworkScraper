@@ -162,6 +162,8 @@ export async function renderStorageStats() {
         set("stat-cache-missing", stats.counts.videosNotCached);
         set("stat-cache-expired", stats.counts.expiredThumbnails);
         set("stat-cache-invalid", stats.counts.invalidThumbnails);
+        set("stat-cache-orphaned", stats.counts.orphanedThumbnails > 0 ? `${stats.counts.orphanedThumbnails} (${formatSize(stats.counts.orphanedSize)})` : "0");
+        set("stat-cache-duplicates", stats.counts.duplicateThumbnails > 0 ? `${stats.counts.duplicateThumbnails} (${formatSize(stats.counts.duplicateSize)})` : "0");
     } catch (err) {
         console.error("Error rendering storage stats:", err);
     }

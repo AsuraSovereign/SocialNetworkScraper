@@ -7,6 +7,35 @@ const DB_VERSION = 2;
 class StorageUtils {
     constructor() {
         this.db = null;
+        this._CACHE_KEY = "socialScraper_stats_data";
+        this._DIRTY_KEY = "socialScraper_stats_dirty";
+    }
+
+    /**
+     * Mark the stats cache as stale. Called on every write operation.
+     */
+    _invalidateCache() {
+        try {
+            localStorage.setItem(this._DIRTY_KEY, "true");
+        } catch (_) {
+            /* localStorage unavailable (service worker) — no-op */
+        }
+    }
+
+    /**
+     * Compute SHA-256 hex digest of a Blob.
+     * Returns null if hashing is unavailable or blob is falsy.
+     */
+    async _computeContentHash(blob) {
+        if (!blob || !blob.arrayBuffer || typeof crypto === "undefined" || !crypto.subtle) return null;
+        try {
+            const buffer = await blob.arrayBuffer();
+            const hashBuffer = await crypto.subtle.digest("SHA-256", buffer);
+            const hashArray = Array.from(new Uint8Array(hashBuffer));
+            return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
+        } catch (_) {
+            return null;
+        }
     }
 
     async init() {
@@ -58,7 +87,10 @@ class StorageUtils {
             const store = transaction.objectStore(storeName);
             const request = store.put(data);
 
-            request.onsuccess = () => resolve(request.result);
+            request.onsuccess = () => {
+                this._invalidateCache();
+                resolve(request.result);
+            };
             request.onerror = () => reject(request.error);
         });
     }
@@ -72,7 +104,10 @@ class StorageUtils {
             const transaction = this.db.transaction([storeName], "readwrite");
             const store = transaction.objectStore(storeName);
 
-            transaction.oncomplete = () => resolve();
+            transaction.oncomplete = () => {
+                this._invalidateCache();
+                resolve();
+            };
             transaction.onerror = (event) => reject(event.target.error);
 
             items.forEach((item) => {
@@ -126,7 +161,10 @@ class StorageUtils {
             const store = transaction.objectStore(storeName);
             const request = store.delete(key);
 
-            request.onsuccess = () => resolve();
+            request.onsuccess = () => {
+                this._invalidateCache();
+                resolve();
+            };
             request.onerror = () => reject(request.error);
         });
     }
@@ -140,7 +178,10 @@ class StorageUtils {
             const transaction = this.db.transaction([storeName], "readwrite");
             const store = transaction.objectStore(storeName);
 
-            transaction.oncomplete = () => resolve();
+            transaction.oncomplete = () => {
+                this._invalidateCache();
+                resolve();
+            };
             transaction.onerror = () => reject(transaction.error);
 
             keys.forEach((key) => store.delete(key));
@@ -157,7 +198,10 @@ class StorageUtils {
             const store = transaction.objectStore(storeName);
             const request = store.clear();
 
-            request.onsuccess = () => resolve();
+            request.onsuccess = () => {
+                this._invalidateCache();
+                resolve();
+            };
             request.onerror = () => reject(request.error);
         });
     }
@@ -197,7 +241,10 @@ class StorageUtils {
             const store = transaction.objectStore("thumbnails");
             const request = store.put(data); // { url, blob, ttl }
 
-            request.onsuccess = () => resolve();
+            request.onsuccess = () => {
+                this._invalidateCache();
+                resolve();
+            };
             request.onerror = () => reject(request.error);
         });
     }
@@ -245,24 +292,38 @@ class StorageUtils {
             const store = transaction.objectStore("thumbnails");
             const request = store.delete(url);
 
-            request.onsuccess = () => resolve();
+            request.onsuccess = () => {
+                this._invalidateCache();
+                resolve();
+            };
             request.onerror = () => reject(request.error);
         });
     }
 
     /**
-     * Metrics Calculation
+     * Metrics Calculation (Smart Cached + Integrity Scan)
+     * Uses localStorage to cache results. Cache is invalidated on any write.
      */
-    /**
-     * Metrics Calculation (Cursor-based / Memory Efficient)
-     */
-    async getStorageUsage() {
+    async getStorageUsage(forceRefresh = false) {
         await this.init();
 
-        // Helper to calc string size in bytes (approx)
+        // 1. Check Cache
+        if (!forceRefresh) {
+            try {
+                const dirty = localStorage.getItem(this._DIRTY_KEY);
+                if (dirty === "false") {
+                    const cached = localStorage.getItem(this._CACHE_KEY);
+                    if (cached) return JSON.parse(cached);
+                }
+            } catch (_) {
+                /* localStorage unavailable */
+            }
+        }
+
+        // 2. Full Scan Required
         const getSize = (obj) => JSON.stringify(obj).length * 2;
 
-        return new Promise((resolve, reject) => {
+        const result = await new Promise((resolve, reject) => {
             const transaction = this.db.transaction(["media", "thumbnails"], "readonly");
             const mediaStore = transaction.objectStore("media");
             const thumbStore = transaction.objectStore("thumbnails");
@@ -272,15 +333,17 @@ class StorageUtils {
             let invalidThumbCount = 0;
             let cachedThumbCount = 0;
             let expiredThumbCount = 0;
+            let orphanedCount = 0;
+            let orphanedSize = 0;
             const userUsage = {};
             let totalMediaCount = 0;
 
-            // Track unique users
             const uniqueUsers = new Set();
             let lastScrapeTime = 0;
             const now = Date.now();
 
-            // 1. Process Media via Cursor
+            // Phase 1: Build reference set of active thumbnail URLs from media
+            const activeThumbnailUrls = new Set();
             const mediaCursorRequest = mediaStore.openCursor();
 
             mediaCursorRequest.onsuccess = (e) => {
@@ -289,7 +352,6 @@ class StorageUtils {
                     const m = cursor.value;
                     totalMediaCount++;
 
-                    // Stats
                     if (m.userId) {
                         uniqueUsers.add(m.userId);
                         const size = getSize(m);
@@ -301,14 +363,15 @@ class StorageUtils {
                         lastScrapeTime = m.scrapedAt;
                     }
 
-                    // Invalid Thumbnail Check
                     if (!m.thumbnailUrl || m.thumbnailUrl.startsWith("data:")) {
                         invalidThumbCount++;
+                    } else {
+                        activeThumbnailUrls.add(m.thumbnailUrl);
                     }
 
                     cursor.continue();
                 } else {
-                    // Media done, process thumbnails
+                    // Phase 2: Scan thumbnails
                     processThumbnails();
                 }
             };
@@ -316,6 +379,11 @@ class StorageUtils {
             mediaCursorRequest.onerror = () => reject(mediaCursorRequest.error);
 
             function processThumbnails() {
+                const seenHashes = new Map(); // hash -> first URL
+                let duplicateCount = 0;
+                let duplicateSize = 0;
+                const thumbsToHash = []; // collect for async hashing after cursor
+
                 const thumbCursorRequest = thumbStore.openCursor();
 
                 thumbCursorRequest.onsuccess = (e) => {
@@ -324,28 +392,57 @@ class StorageUtils {
                         const t = cursor.value;
                         cachedThumbCount++;
 
+                        const blobSize = t.blob && t.blob.size ? t.blob.size : getSize(t);
+
                         if (t.ttl && t.ttl < now) {
                             expiredThumbCount++;
                         }
 
+                        thumbSize += blobSize;
+
+                        // Orphan check: thumbnail URL not referenced by any media
+                        if (!activeThumbnailUrls.has(t.url)) {
+                            orphanedCount++;
+                            orphanedSize += blobSize;
+                        }
+
+                        // Collect blob for duplicate hashing
                         if (t.blob && t.blob.size) {
-                            thumbSize += t.blob.size;
-                        } else {
-                            thumbSize += getSize(t);
+                            thumbsToHash.push({ url: t.url, blob: t.blob, size: blobSize });
                         }
 
                         cursor.continue();
                     } else {
-                        // Done iterating
-                        finalize();
+                        // Cursor done — run async duplicate detection
+                        detectDuplicates(thumbsToHash, seenHashes, duplicateCount, duplicateSize);
                     }
                 };
 
                 thumbCursorRequest.onerror = () => reject(thumbCursorRequest.error);
+
+                async function detectDuplicates(thumbs, seen, dupCount, dupSize) {
+                    try {
+                        const instance = (typeof self !== "undefined" ? self : window).socialDB;
+                        for (const t of thumbs) {
+                            const hash = await instance._computeContentHash(t.blob);
+                            if (hash) {
+                                if (seen.has(hash)) {
+                                    dupCount++;
+                                    dupSize += t.size;
+                                } else {
+                                    seen.set(hash, t.url);
+                                }
+                            }
+                        }
+                    } catch (_) {
+                        /* hashing unavailable */
+                    }
+
+                    finalize(dupCount, dupSize);
+                }
             }
 
-            function finalize() {
-                // Top User
+            function finalize(duplicateCount, duplicateSize) {
                 let topUser = { userId: "None", size: 0 };
                 for (const [userId, size] of Object.entries(userUsage)) {
                     if (size > topUser.size) {
@@ -365,10 +462,24 @@ class StorageUtils {
                         invalidThumbnails: invalidThumbCount,
                         expiredThumbnails: expiredThumbCount,
                         videosNotCached: Math.max(0, totalMediaCount - cachedThumbCount),
+                        orphanedThumbnails: orphanedCount,
+                        orphanedSize: orphanedSize,
+                        duplicateThumbnails: duplicateCount,
+                        duplicateSize: duplicateSize,
                     },
                 });
             }
         });
+
+        // 3. Persist to cache
+        try {
+            localStorage.setItem(this._CACHE_KEY, JSON.stringify(result));
+            localStorage.setItem(this._DIRTY_KEY, "false");
+        } catch (_) {
+            /* localStorage unavailable or quota exceeded */
+        }
+
+        return result;
     }
 
     /**
@@ -640,7 +751,10 @@ class StorageUtils {
             // Transaction-based loop
             data.forEach((item) => processItem(item));
 
-            transaction.oncomplete = () => resolve({ success: successCount, errors: errorCount });
+            transaction.oncomplete = () => {
+                this._invalidateCache();
+                resolve({ success: successCount, errors: errorCount });
+            };
             transaction.onerror = (e) => reject(e.target.error);
         });
     }
@@ -680,7 +794,10 @@ class StorageUtils {
                 };
             });
 
-            transaction.oncomplete = () => resolve();
+            transaction.oncomplete = () => {
+                this._invalidateCache();
+                resolve();
+            };
             transaction.onerror = (e) => reject(e.target.error);
         });
     }
