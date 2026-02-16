@@ -341,13 +341,24 @@ class StorageUtils {
             }
         }
 
-        // 2. Fast O(1) counts
+        // 2. Fast O(1) counts + instant storage estimate (parallel)
         const idbCount = (store) =>
             new Promise((resolve, reject) => {
                 const req = store.count();
                 req.onsuccess = () => resolve(req.result);
                 req.onerror = () => reject(req.error);
             });
+
+        // navigator.storage.estimate() gives instant IDB usage without iteration
+        let estimatedTotalBytes = null;
+        try {
+            if (navigator.storage && navigator.storage.estimate) {
+                const est = await navigator.storage.estimate();
+                estimatedTotalBytes = est.usage || null;
+            }
+        } catch (_) {
+            /* estimate unavailable */
+        }
 
         const transaction = this.db.transaction(["media", "thumbnails"], "readonly");
         const mediaStore = transaction.objectStore("media");
@@ -440,6 +451,7 @@ class StorageUtils {
                         resolve({
                             totalSizeBytes: null, // Populated async by calculateDetailedStats
                             thumbnailSizeBytes: null,
+                            estimatedTotalBytes: estimatedTotalBytes, // Instant estimate from navigator.storage
                             topUser: topUser,
                             counts: {
                                 totalVideos: totalMediaCount,
@@ -472,6 +484,10 @@ class StorageUtils {
                 // Merge sizes into current fast result
                 result.totalSizeBytes = detailed.totalSizeBytes;
                 result.thumbnailSizeBytes = detailed.thumbnailSizeBytes;
+                // Merge per-user size if available
+                if (detailed.topUser) {
+                    result.topUser.size = detailed.topUser.size;
+                }
                 console.log("[Storage] Merged cached detailed stats into result.");
             } else {
                 // Fire-and-forget: ask background to calculate sizes
@@ -504,8 +520,12 @@ class StorageUtils {
      * Detailed Size Calculation (Chunked, Non-Blocking)
      * Runs in the background service worker. Iterates all records in chunks,
      * yielding between chunks to prevent blocking the event loop.
-     * Reports progress every 10% via chrome.storage.local and console.
+     * Reports progress every 5% via chrome.storage.local and console.
      * Results are written to chrome.storage.local for reactive UI pickup.
+     *
+     * Performance: Uses fast property-walking heuristic instead of JSON.stringify
+     * for size estimation. JSON.stringify on every record was the root cause of
+     * the multi-minute freeze — it serializes blobs and deep objects.
      */
     async calculateDetailedStats() {
         if (this._isCalculating) return;
@@ -524,12 +544,37 @@ class StorageUtils {
 
             const CHUNK_SIZE = 500;
             const YIELD_MS = 10;
-            const getSize = (obj) => {
-                try {
-                    return JSON.stringify(obj).length * 2;
-                } catch (_) {
-                    return 0;
+
+            /**
+             * Fast size estimation via property walking.
+             * Avoids JSON.stringify which is O(n) per object and chokes on blobs.
+             * Estimates: 8 bytes per number, string.length*2 for strings,
+             * blob.size for blobs, 4 bytes for booleans, recurse for objects.
+             */
+            const estimateObjectSize = (obj, depth = 0) => {
+                if (obj == null) return 4;
+                if (depth > 3) return 32; // Safety: don't recurse too deep
+                const type = typeof obj;
+                if (type === "string") return obj.length * 2;
+                if (type === "number") return 8;
+                if (type === "boolean") return 4;
+                // Blob/File — use native .size property
+                if (obj instanceof Blob) return obj.size;
+                if (Array.isArray(obj)) {
+                    let s = 16; // array overhead
+                    for (let i = 0; i < obj.length; i++) s += estimateObjectSize(obj[i], depth + 1);
+                    return s;
                 }
+                if (type === "object") {
+                    let s = 32; // object overhead
+                    const keys = Object.keys(obj);
+                    for (let i = 0; i < keys.length; i++) {
+                        s += keys[i].length * 2; // key
+                        s += estimateObjectSize(obj[keys[i]], depth + 1); // value
+                    }
+                    return s;
+                }
+                return 8; // fallback
             };
 
             // Get total counts for progress tracking
@@ -545,18 +590,20 @@ class StorageUtils {
             const grandTotal = totalMedia + totalThumbs;
 
             if (grandTotal === 0) {
-                setStatus("COMPLETE", 100);
+                const emptyStats = { totalSizeBytes: 0, thumbnailSizeBytes: 0, mediaSizeBytes: 0, topUser: { userId: "None", size: 0 }, _cachedAt: Date.now() };
+                await new Promise((r) => chrome.storage.local.set({ [this._STATS_KEY]: emptyStats, [this._CALC_STATUS_KEY]: { state: "COMPLETE", progress: 100 } }, r));
                 console.log("[Storage] No items to calculate sizes for.");
                 this._isCalculating = false;
-                return { totalSizeBytes: 0, thumbnailSizeBytes: 0, mediaSizeBytes: 0, _cachedAt: Date.now() };
+                return emptyStats;
             }
 
             let processed = 0;
             let lastReportedPct = -1;
 
+            // Report progress at 5% increments (was 10%)
             const reportProgress = () => {
                 const pct = Math.floor((processed / grandTotal) * 100);
-                const bucket = Math.floor(pct / 10) * 10; // Round down to nearest 10
+                const bucket = Math.floor(pct / 5) * 5; // Round down to nearest 5
                 if (bucket > lastReportedPct) {
                     lastReportedPct = bucket;
                     setStatus("CALCULATING", bucket);
@@ -568,8 +615,9 @@ class StorageUtils {
             setStatus("CALCULATING", 0);
             console.log(`[Storage] Starting size calculation: ${grandTotal} items (${totalMedia} media + ${totalThumbs} thumbnails)`);
 
-            // --- Phase 1: Media size ---
+            // --- Phase 1: Media size (with per-user tracking) ---
             let mediaSize = 0;
+            const userSizes = {}; // Track per-user byte sizes
 
             await new Promise((resolve, reject) => {
                 const tx = this.db.transaction(["media"], "readonly");
@@ -579,8 +627,16 @@ class StorageUtils {
                 req.onsuccess = (e) => {
                     const cursor = e.target.result;
                     if (cursor) {
-                        mediaSize += getSize(cursor.value);
+                        const m = cursor.value;
+                        const itemSize = estimateObjectSize(m);
+                        mediaSize += itemSize;
                         processed++;
+
+                        // Track per-user sizes for "Top User (Space)"
+                        if (m.userId) {
+                            userSizes[m.userId] = (userSizes[m.userId] || 0) + itemSize;
+                        }
+
                         reportProgress();
 
                         if (processed % CHUNK_SIZE === 0) {
@@ -607,7 +663,8 @@ class StorageUtils {
                     const cursor = e.target.result;
                     if (cursor) {
                         const t = cursor.value;
-                        thumbSize += t.blob && t.blob.size ? t.blob.size : getSize(t);
+                        // Use blob.size directly for binary data — fast and accurate
+                        thumbSize += t.blob && t.blob.size ? t.blob.size : estimateObjectSize(t);
                         processed++;
                         reportProgress();
 
@@ -623,11 +680,20 @@ class StorageUtils {
                 req.onerror = () => reject(req.error);
             });
 
-            // --- Phase 3: Persist results ---
+            // --- Phase 3: Determine top user by size ---
+            let topUser = { userId: "None", size: 0 };
+            for (const [userId, size] of Object.entries(userSizes)) {
+                if (size > topUser.size) {
+                    topUser = { userId, size };
+                }
+            }
+
+            // --- Phase 4: Persist results ---
             const detailedStats = {
                 totalSizeBytes: mediaSize + thumbSize,
                 thumbnailSizeBytes: thumbSize,
                 mediaSizeBytes: mediaSize,
+                topUser: topUser,
                 _cachedAt: Date.now(),
             };
 
@@ -641,7 +707,7 @@ class StorageUtils {
                 ),
             );
 
-            console.log(`[Storage] Stats calculation complete: media=${mediaSize}, thumbs=${thumbSize}, total=${mediaSize + thumbSize}`);
+            console.log(`[Storage] Stats calculation complete: media=${mediaSize}, thumbs=${thumbSize}, total=${mediaSize + thumbSize}, topUser=${topUser.userId}`);
             return detailedStats;
         } catch (err) {
             console.error("[Storage] calculateDetailedStats error:", err);

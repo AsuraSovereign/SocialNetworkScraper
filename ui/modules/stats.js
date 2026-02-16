@@ -62,6 +62,12 @@ function updateSizeDisplay(detailed) {
 
     set("stat-db-usage", formatSize(detailed.totalSizeBytes));
     set("stat-thumb-usage", `Thumbnails: ${formatSize(detailed.thumbnailSizeBytes)}`);
+
+    // Update top user with actual byte size from detailed stats
+    if (detailed.topUser && detailed.topUser.size > 0) {
+        set("stat-top-user", detailed.topUser.userId);
+        set("stat-top-user-size", `Size: ${formatSize(detailed.topUser.size)}`);
+    }
 }
 
 /**
@@ -221,11 +227,28 @@ export async function renderStorageStats() {
             if (el) el.textContent = txt;
         };
 
-        // Show "Calculating..." when sizes are pending, otherwise show actual sizes
-        set("stat-db-usage", stats.totalSizeBytes != null ? formatSize(stats.totalSizeBytes) : "Calculating...");
+        // Show precise size if available, instant estimate with "~" prefix,
+        // or "Calculating..." as last resort
+        if (stats.totalSizeBytes != null) {
+            set("stat-db-usage", formatSize(stats.totalSizeBytes));
+        } else if (stats.estimatedTotalBytes != null) {
+            set("stat-db-usage", `~${formatSize(stats.estimatedTotalBytes)}`);
+        } else {
+            set("stat-db-usage", "Calculating...");
+        }
+
         set("stat-thumb-usage", stats.thumbnailSizeBytes != null ? `Thumbnails: ${formatSize(stats.thumbnailSizeBytes)}` : "Thumbnails: Calculating...");
+
+        // Top user: show size if available from detailed stats, otherwise show item count
         set("stat-top-user", stats.topUser.userId !== "None" ? stats.topUser.userId : "-");
-        set("stat-top-user-size", stats.topUser.count != null ? `Items: ${stats.topUser.count}` : stats.topUser.size != null ? `Size: ${formatSize(stats.topUser.size)}` : "");
+        if (stats.topUser.size != null && stats.topUser.size > 0) {
+            set("stat-top-user-size", `Size: ${formatSize(stats.topUser.size)}`);
+        } else if (stats.topUser.count != null) {
+            set("stat-top-user-size", `Items: ${stats.topUser.count}`);
+        } else {
+            set("stat-top-user-size", "");
+        }
+
         set("stat-cache-count", stats.counts.cachedThumbnails);
         set("stat-cache-missing", stats.counts.videosNotCached);
         set("stat-cache-expired", stats.counts.expiredThumbnails);

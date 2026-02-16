@@ -1,4 +1,4 @@
-import { initStats, renderStats, setupCacheProgressListener, renderStorageStats } from "./modules/stats.js";
+import { initStats, renderStats, setupCacheProgressListener } from "./modules/stats.js";
 import { initVideos, renderVideos } from "./modules/videos.js";
 import { initExport, updateLivePreview } from "./modules/export.js";
 import { initDelete, updateDeletePreview } from "./modules/delete.js";
