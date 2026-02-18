@@ -107,39 +107,109 @@ async function handleImport() {
         addLog(`Reading ${file.name}...`);
 
         try {
-            const text = await file.text();
-            let data;
-            try {
-                data = JSON.parse(text);
-            } catch (jsonErr) {
-                addLog(`Error parsing JSON in ${file.name}: ${jsonErr.message}`);
-                processedFiles++;
-                continue;
-            }
+            if (file.name.toLowerCase().endsWith(".zip")) {
+                // --- ZIP Import Strategy ---
+                if (!window.JSZip) throw new Error("JSZip library not loaded.");
+                addLog(`Detected ZIP archive. Opening...`);
 
-            let items = [];
-            let storeName = "media";
+                const zip = await window.JSZip.loadAsync(file);
 
-            if (Array.isArray(data)) {
-                items = data;
-                addLog(`Detected simple array format. Assuming 'media' store.`);
-            } else if (data.items && Array.isArray(data.items)) {
-                items = data.items;
-                if (data.store) storeName = data.store;
-                addLog(`Detected Dump format. Target Store: ${storeName}`);
+                // 1. Look for Thumbnails Metadata
+                const metaFile = zip.file("thumbnails_meta.json");
+                if (metaFile) {
+                    addLog("Found thumbnails_meta.json. Importing thumbnails...");
+                    const metaText = await metaFile.async("string");
+                    const metaItems = JSON.parse(metaText);
+
+                    let zipSuccess = 0;
+                    let zipErrors = 0;
+
+                    // Process sequentially or parallel? Parallel is faster but might key-lock DB if not careful.
+                    // importData uses "readwrite" tx.
+                    // Better to batch current blobs into a list and call importData once?
+                    // But memory usage for Blobs might be high.
+                    // Let's batch in chunks of 50.
+
+                    let batch = [];
+                    const BATCH_SIZE = 50;
+
+                    for (const meta of metaItems) {
+                        if (meta._zipFileName) {
+                            const blobFile = zip.file(meta._zipFileName);
+                            if (blobFile) {
+                                const blobData = await blobFile.async("blob");
+                                // Reconstruct Blob with correct type
+                                const finalBlob = new Blob([blobData], { type: meta._contentType || "image/jpeg" });
+
+                                const newItem = { ...meta };
+                                delete newItem._zipFileName;
+                                delete newItem._contentType;
+                                newItem.blob = finalBlob;
+
+                                batch.push(newItem);
+                            } else {
+                                zipErrors++;
+                            }
+                        }
+
+                        if (batch.length >= BATCH_SIZE) {
+                            const res = await window.socialDB.importData("thumbnails", batch, mode);
+                            zipSuccess += res.success;
+                            zipErrors += res.errors; // importData errors (e.g. duplicates)
+                            batch = [];
+                        }
+                    }
+
+                    if (batch.length > 0) {
+                        const res = await window.socialDB.importData("thumbnails", batch, mode);
+                        zipSuccess += res.success;
+                        zipErrors += res.errors;
+                    }
+
+                    addLog(`Thumbnails Import: ${zipSuccess} imported, ${zipErrors} skipped/failed.`);
+                    totalItemsImported += zipSuccess;
+                    totalErrors += zipErrors;
+                } else {
+                    addLog("No thumbnails_meta.json found in ZIP. Checking for other JSON dumps...");
+                    // Optional: Iterate root files to see if any are JSON dumps
+                    // For now, just log warning if strictly a thumbnail zip was expected.
+                }
             } else {
-                addLog(`Unknown format in ${file.name}. Skipping.`);
-                processedFiles++;
-                continue;
+                // --- Standard JSON Import ---
+                const text = await file.text();
+                let data;
+                try {
+                    data = JSON.parse(text);
+                } catch (jsonErr) {
+                    addLog(`Error parsing JSON in ${file.name}: ${jsonErr.message}`);
+                    processedFiles++;
+                    continue;
+                }
+
+                let items = [];
+                let storeName = "media";
+
+                if (Array.isArray(data)) {
+                    items = data;
+                    addLog(`Detected simple array format. Assuming 'media' store.`);
+                } else if (data.items && Array.isArray(data.items)) {
+                    items = data.items;
+                    if (data.store) storeName = data.store;
+                    addLog(`Detected Dump format. Target Store: ${storeName}`);
+                } else {
+                    addLog(`Unknown format in ${file.name}. Skipping.`);
+                    processedFiles++;
+                    continue;
+                }
+
+                addLog(`Importing ${items.length} items into '${storeName}' (Mode: ${mode})...`);
+
+                const result = await window.socialDB.importData(storeName, items, mode);
+
+                addLog(`Completed ${file.name}: Success=${result.success}, Errors=${result.errors}`);
+                totalItemsImported += result.success;
+                totalErrors += result.errors;
             }
-
-            addLog(`Importing ${items.length} items into '${storeName}' (Mode: ${mode})...`);
-
-            const result = await window.socialDB.importData(storeName, items, mode);
-
-            addLog(`Completed ${file.name}: Success=${result.success}, Errors=${result.errors}`);
-            totalItemsImported += result.success;
-            totalErrors += result.errors;
         } catch (err) {
             addLog(`Error processing ${file.name}: ${err.message}`);
         }

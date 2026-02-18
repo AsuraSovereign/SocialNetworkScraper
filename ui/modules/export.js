@@ -568,6 +568,7 @@ async function exportDB(progressCallback) {
     const type = document.getElementById("db-export-type").value;
     const storeNameEl = document.getElementById("db-target-store");
     const storeName = storeNameEl ? storeNameEl.value : "media";
+    const includeThumbnails = document.getElementById("db-include-thumbnails")?.checked;
 
     const stores = type === "single" ? [storeName] : ["media", "thumbnails"];
 
@@ -585,9 +586,118 @@ async function exportDB(progressCallback) {
         URL.revokeObjectURL(url);
     };
 
+    const downloadBlob = (blob, name) => {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = name;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    };
+
     const MAX_CHUNK_ITEMS = 5000;
+    // ZIP constraints
+    const ZOOM_ZIP_LIMIT_MB = 200; // conservative limit
+    const ZOOM_ZIP_LIMIT_COUNT = 2000;
 
     for (const store of stores) {
+        // --- Thumbnails ZIP Export Strategy ---
+        if (store === "thumbnails" && includeThumbnails) {
+            progressCallback(`Exporting Thumbnails (ZIP Mode)...`);
+            if (!window.JSZip) throw new Error("JSZip library not loaded.");
+
+            let offset = 0;
+            let zipIndex = 1;
+
+            let currentZip = new JSZip();
+            let currentMeta = [];
+            let currentSize = 0;
+            let currentCount = 0;
+
+            while (true) {
+                const result = await window.socialDB.exportStore(store, offset, 1000); // 1000 item chunks from DB
+                const items = result.items;
+
+                if (items.length === 0) {
+                    if (currentCount > 0) {
+                        // Flush remaining
+                        currentZip.file("thumbnails_meta.json", JSON.stringify(currentMeta, null, 2));
+                        const content = await currentZip.generateAsync({ type: "blob" });
+                        downloadBlob(content, `DB_thumbnails_Part${zipIndex}.zip`);
+                    }
+                    break;
+                }
+
+                for (const item of items) {
+                    if (!item.blob) continue; // Skip invalid
+
+                    // Generate filename inside ZIP
+                    let ext = "jpg";
+                    if (item.blob.type === "image/webp") ext = "webp";
+                    else if (item.blob.type === "image/png") ext = "png";
+
+                    // Use hash or url-based name? URL can be long and have special chars.
+                    // Use a simple incrementing ID or hash if available?
+                    // Let's use a safe name based on URL hash or just random ID,
+                    // but we need to map it back in metadata.
+                    // Simple approach: usage of index/timestamp or just sanitize the URL slightly
+                    // Better: "image_<index>.<ext>" and map in json.
+
+                    const fileName = `images/thumb_${Date.now()}_${Math.random().toString(36).substr(2, 9)}.${ext}`;
+
+                    currentZip.file(fileName, item.blob);
+
+                    // Store metadata without the blob
+                    const meta = { ...item };
+                    delete meta.blob; // Remove blob from JSON
+                    meta._zipFileName = fileName; // Link to file
+                    meta._contentType = item.blob.type; // Save MimeType
+                    currentMeta.push(meta);
+
+                    currentSize += item.blob.size;
+                    currentCount++;
+
+                    // Check limits
+                    if (currentSize > ZOOM_ZIP_LIMIT_MB * 1024 * 1024 || currentCount >= ZOOM_ZIP_LIMIT_COUNT) {
+                        progressCallback(`Zipping Thumbnails Part ${zipIndex}...`);
+
+                        currentZip.file("thumbnails_meta.json", JSON.stringify(currentMeta, null, 2));
+                        const content = await currentZip.generateAsync({ type: "blob" });
+                        downloadBlob(content, `DB_thumbnails_Part${zipIndex}.zip`);
+
+                        zipIndex++;
+                        offset += 1; // logical increment not needed for DB offset as we just processed items
+                        // Wait, offset is for DB pagination. We MUST continue DB iteration.
+
+                        // Reset Zip
+                        currentZip = new JSZip();
+                        currentMeta = [];
+                        currentSize = 0;
+                        currentCount = 0;
+                    }
+                }
+
+                offset += items.length;
+                if (!result.hasMore) {
+                    // Flush remaining loop
+                    if (currentCount > 0) {
+                        progressCallback(`Finishing Thumbnails Part ${zipIndex}...`);
+                        currentZip.file("thumbnails_meta.json", JSON.stringify(currentMeta, null, 2));
+                        const content = await currentZip.generateAsync({ type: "blob" });
+                        downloadBlob(content, `DB_thumbnails_Part${zipIndex}.zip`);
+                    }
+                    break;
+                }
+
+                progressCallback(`Processed ${offset} thumbnails...`);
+            }
+
+            continue; // Done with thumbnails
+        }
+
+        // --- Standard JSON Export ---
         progressCallback(`Exporting Store: ${store}...`);
 
         let offset = 0;
