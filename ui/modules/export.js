@@ -52,10 +52,32 @@ export function initExport() {
     const dbType = document.getElementById("db-export-type");
     if (dbType) {
         const storeSel = document.getElementById("db-store-select");
+        const snapshotOpts = document.getElementById("db-snapshot-options");
+        const includeThumbsWrapper = document.getElementById("db-include-thumbs-wrapper");
+
         const handleDbType = () => {
-            storeSel.style.display = dbType.value === "single" ? "block" : "none";
+            const val = dbType.value;
+            if (storeSel) storeSel.style.display = val === "single" ? "block" : "none";
+            if (snapshotOpts) snapshotOpts.style.display = val === "snapshot" ? "block" : "none";
+            if (includeThumbsWrapper) includeThumbsWrapper.style.display = val === "single" ? "block" : "none";
         };
         dbType.addEventListener("change", handleDbType);
+        handleDbType(); // Init state
+
+        // Init Last Snapshot Time Display
+        updateLastSnapshotDisplay();
+    }
+}
+
+function updateLastSnapshotDisplay() {
+    const el = document.getElementById("last-snapshot-time");
+    if (!el) return;
+
+    const lastTime = localStorage.getItem("socialScraper_lastSnapshot");
+    if (lastTime) {
+        el.textContent = new Date(parseInt(lastTime)).toLocaleString();
+    } else {
+        el.textContent = "Never";
     }
 }
 
@@ -367,7 +389,7 @@ async function handleExportAction() {
                 await exportThumbnails(filters, setBusy);
                 break;
             case "db":
-                await exportDB(setBusy);
+                await exportSnapshot(setBusy);
                 break;
             case "csv":
                 await exportCSV(filters);
@@ -564,7 +586,213 @@ async function exportThumbnails(filters, progressCallback) {
     }
 }
 
-async function exportDB(progressCallback) {
+async function exportSnapshot(progressCallback) {
+    const type = document.getElementById("db-export-type").value;
+
+    // Legacy/Other modes
+    if (type === "single" || type === "full") {
+        await exportDBLegacy(progressCallback);
+        return;
+    }
+
+    progressCallback("Initializing Snapshot...");
+    if (!window.JSZip) throw new Error("JSZip library not loaded.");
+
+    // Config
+    const ZOOM_ZIP_LIMIT_MB = 500; // 500MB limit per ZIP header
+    const ZOOM_ZIP_LIMIT_BYTES = ZOOM_ZIP_LIMIT_MB * 1024 * 1024;
+
+    let zipIndex = 1;
+    let currentZip = new JSZip();
+    let currentSize = 0;
+
+    // Manifest
+    const manifest = {
+        version: 1,
+        created: new Date().toISOString(),
+        parts: [],
+    };
+
+    // 1. Export Media Store (Metadata)
+    progressCallback("Exporting Media Metadata...");
+
+    // Incremental Logic
+    const lastSnapshot = localStorage.getItem("socialScraper_lastSnapshot");
+    const forceFull = document.getElementById("db-force-full-snapshot")?.checked;
+    let sinceTime = 0;
+
+    if (lastSnapshot && !forceFull) {
+        sinceTime = parseInt(lastSnapshot);
+        progressCallback(`Incremental Mode: Exporting items since ${new Date(sinceTime).toLocaleString()}...`);
+    } else {
+        progressCallback("Full Export Mode...");
+    }
+
+    const mediaResult = await getAllStoreData(
+        "media",
+        (count) => {
+            progressCallback(`Fetching Metadata (${count})...`);
+        },
+        sinceTime,
+    );
+
+    // 2. Export Thumbnails
+    progressCallback("Querying Thumbnails...");
+
+    // Cursor strategy for thumbnails to save memory
+    // We can't fetch all blobs appropriately without crashing memory on large DBs.
+    // (Variables zipIndex, currentZip, currentSize are already active and contain media.json)
+
+    // Metadata for the current ZIP part
+    let currentThumbMeta = [];
+
+    const downloadCurrentZip = async (isFinal = false) => {
+        progressCallback(`Generating ZIP Part ${zipIndex}...`);
+
+        // Add thumbnail mapping for this part
+        if (currentThumbMeta.length > 0) {
+            currentZip.file("thumbnails_meta.json", JSON.stringify(currentThumbMeta, null, 2));
+        }
+
+        // Add manifest to Part 1 only? or all?
+        // Let's add manifest to Part 1.
+        if (zipIndex === 1) {
+            const finalManifest = { ...manifest, since: sinceTime, generated: Date.now() };
+            currentZip.file("snapshot.json", JSON.stringify(finalManifest, null, 2));
+            // Also add media.json to Part 1
+            const mediaJson = JSON.stringify(mediaResult, null, 2);
+            currentZip.file("media.json", mediaJson);
+        }
+
+        const content = await currentZip.generateAsync({ type: "blob" });
+        const fname = `Snapshot_${new Date().toISOString().split("T")[0]}_Part${zipIndex}.zip`;
+        downloadFileBlob(content, fname);
+
+        // Reset
+        zipIndex++;
+        currentZip = new JSZip();
+        currentSize = 0;
+        currentThumbMeta = [];
+    };
+
+    // New Thumbnail Export Logic based on Media
+    // We only export thumbnails that are referenced by the exported Media items.
+    // This naturally handles incremental exports (only new media -> only new thumbnails).
+
+    const mediaItems = mediaResult.items;
+    const thumbUrlsToFetch = new Set();
+
+    mediaItems.forEach((m) => {
+        if (m.thumbnailUrl && !m.thumbnailUrl.startsWith("data:")) {
+            thumbUrlsToFetch.add(m.thumbnailUrl);
+        }
+    });
+
+    const totalThumbsToFetch = thumbUrlsToFetch.size;
+    progressCallback(`Identified ${totalThumbsToFetch} thumbnails to export...`);
+
+    const thumbUrlsArray = Array.from(thumbUrlsToFetch);
+    let processedThumbs = 0;
+
+    for (let i = 0; i < totalThumbsToFetch; i++) {
+        const url = thumbUrlsArray[i];
+        try {
+            const thumb = await window.socialDB.getThumbnail(url);
+            if (thumb && thumb.blob) {
+                let ext = "jpg";
+                if (thumb.blob.type === "image/webp") ext = "webp";
+                else if (thumb.blob.type === "image/png") ext = "png";
+
+                const safeName = `img_${processedThumbs}_${Math.random().toString(36).substring(2, 7)}.${ext}`;
+                const zipPath = `thumbnails/${safeName}`;
+
+                currentZip.file(zipPath, thumb.blob);
+                currentSize += thumb.blob.size;
+
+                const meta = { ...thumb };
+                delete meta.blob;
+                meta._zipPath = zipPath;
+                meta._contentType = thumb.blob.type;
+                currentThumbMeta.push(meta);
+
+                processedThumbs++;
+
+                if (currentSize >= ZOOM_ZIP_LIMIT_BYTES) {
+                    await downloadCurrentZip(false);
+                }
+            }
+        } catch (e) {
+            console.warn("Failed to fetch thumb", url, e);
+        }
+
+        if (i % 50 === 0) progressCallback(`Processing Thumbnails: ${i}/${totalThumbsToFetch}...`);
+    }
+
+    // Final Flush
+    if (currentSize > 0 || (zipIndex === 1 && mediaItems.length > 0)) {
+        await downloadCurrentZip(true);
+    }
+
+    if (mediaItems.length === 0 && processedThumbs === 0) {
+        progressCallback("Nothing new to export.");
+        alert("No new items found since last snapshot.");
+    } else {
+        // Update Snapshot Time
+        localStorage.setItem("socialScraper_lastSnapshot", Date.now().toString());
+        updateLastSnapshotDisplay(); // Refresh UI
+        progressCallback("Snapshot Export Complete!");
+    }
+}
+
+async function getAllStoreData(storeName, onProgress, since = 0) {
+    let allItems = [];
+    let offset = 0;
+    const LIMIT = 2000;
+    while (true) {
+        let result;
+        if (storeName === "media") {
+            const criteria = { startDate: since };
+            // Note: queryMedia returns { items, hasMore }
+            result = await window.socialDB.queryMedia(criteria, offset, LIMIT);
+        } else {
+            // Fallback for non-media stores (unlikely to need incremental)
+            result = await window.socialDB.exportStore(storeName, offset, LIMIT);
+        }
+
+        allItems = allItems.concat(result.items);
+        // Important: queryMedia with filters uses 'skipped' count for offset,
+        // so we need to track how many we successfully got?
+        // No, queryMedia implementation: if (skipped < offset) skipped++ else push.
+        // So offset represents the number of MATCHING items to skip.
+        // Thus, we increase offset by the number of items we just retrieved.
+        offset += result.items.length;
+
+        if (onProgress) onProgress(allItems.length);
+
+        if (!result.hasMore || result.items.length === 0) break;
+    }
+
+    return {
+        type: "SocialScraper_Snapshot_Store",
+        store: storeName,
+        items: allItems,
+    };
+}
+
+// Helper for download
+function downloadFileBlob(blob, name) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
+
+// Renamed old exportDB to exportDBLegacy for fallback
+async function exportDBLegacy(progressCallback) {
     const type = document.getElementById("db-export-type").value;
     const storeNameEl = document.getElementById("db-target-store");
     const storeName = storeNameEl ? storeNameEl.value : "media";
@@ -576,37 +804,23 @@ async function exportDB(progressCallback) {
         const blob = new Blob([JSON.stringify(obj, null, 2)], {
             type: "application/json",
         });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = name;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
+        downloadFileBlob(blob, name);
     };
 
     const downloadBlob = (blob, name) => {
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = name;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
+        downloadFileBlob(blob, name);
     };
 
     const MAX_CHUNK_ITEMS = 5000;
-    // ZIP constraints
-    const ZOOM_ZIP_LIMIT_MB = 200; // conservative limit
-    const ZOOM_ZIP_LIMIT_COUNT = 2000;
 
     for (const store of stores) {
         // --- Thumbnails ZIP Export Strategy ---
         if (store === "thumbnails" && includeThumbnails) {
             progressCallback(`Exporting Thumbnails (ZIP Mode)...`);
             if (!window.JSZip) throw new Error("JSZip library not loaded.");
+
+            const ZOOM_ZIP_LIMIT_MB = 200;
+            const ZOOM_ZIP_LIMIT_COUNT = 2000;
 
             let offset = 0;
             let zipIndex = 1;
@@ -617,12 +831,11 @@ async function exportDB(progressCallback) {
             let currentCount = 0;
 
             while (true) {
-                const result = await window.socialDB.exportStore(store, offset, 1000); // 1000 item chunks from DB
+                const result = await window.socialDB.exportStore(store, offset, 1000);
                 const items = result.items;
 
                 if (items.length === 0) {
                     if (currentCount > 0) {
-                        // Flush remaining
                         currentZip.file("thumbnails_meta.json", JSON.stringify(currentMeta, null, 2));
                         const content = await currentZip.generateAsync({ type: "blob" });
                         downloadBlob(content, `DB_thumbnails_Part${zipIndex}.zip`);
@@ -631,35 +844,25 @@ async function exportDB(progressCallback) {
                 }
 
                 for (const item of items) {
-                    if (!item.blob) continue; // Skip invalid
+                    if (!item.blob) continue;
 
-                    // Generate filename inside ZIP
                     let ext = "jpg";
                     if (item.blob.type === "image/webp") ext = "webp";
                     else if (item.blob.type === "image/png") ext = "png";
-
-                    // Use hash or url-based name? URL can be long and have special chars.
-                    // Use a simple incrementing ID or hash if available?
-                    // Let's use a safe name based on URL hash or just random ID,
-                    // but we need to map it back in metadata.
-                    // Simple approach: usage of index/timestamp or just sanitize the URL slightly
-                    // Better: "image_<index>.<ext>" and map in json.
 
                     const fileName = `images/thumb_${Date.now()}_${Math.random().toString(36).substr(2, 9)}.${ext}`;
 
                     currentZip.file(fileName, item.blob);
 
-                    // Store metadata without the blob
                     const meta = { ...item };
-                    delete meta.blob; // Remove blob from JSON
-                    meta._zipFileName = fileName; // Link to file
-                    meta._contentType = item.blob.type; // Save MimeType
+                    delete meta.blob;
+                    meta._zipFileName = fileName;
+                    meta._contentType = item.blob.type;
                     currentMeta.push(meta);
 
                     currentSize += item.blob.size;
                     currentCount++;
 
-                    // Check limits
                     if (currentSize > ZOOM_ZIP_LIMIT_MB * 1024 * 1024 || currentCount >= ZOOM_ZIP_LIMIT_COUNT) {
                         progressCallback(`Zipping Thumbnails Part ${zipIndex}...`);
 
@@ -668,10 +871,6 @@ async function exportDB(progressCallback) {
                         downloadBlob(content, `DB_thumbnails_Part${zipIndex}.zip`);
 
                         zipIndex++;
-                        offset += 1; // logical increment not needed for DB offset as we just processed items
-                        // Wait, offset is for DB pagination. We MUST continue DB iteration.
-
-                        // Reset Zip
                         currentZip = new JSZip();
                         currentMeta = [];
                         currentSize = 0;
@@ -681,7 +880,6 @@ async function exportDB(progressCallback) {
 
                 offset += items.length;
                 if (!result.hasMore) {
-                    // Flush remaining loop
                     if (currentCount > 0) {
                         progressCallback(`Finishing Thumbnails Part ${zipIndex}...`);
                         currentZip.file("thumbnails_meta.json", JSON.stringify(currentMeta, null, 2));
@@ -690,41 +888,28 @@ async function exportDB(progressCallback) {
                     }
                     break;
                 }
-
                 progressCallback(`Processed ${offset} thumbnails...`);
             }
-
-            continue; // Done with thumbnails
+            continue;
         }
 
-        // --- Standard JSON Export ---
-        progressCallback(`Exporting Store: ${store}...`);
+        progressCallback(`Exporting ${store}...`);
 
         let offset = 0;
-        let fileIndex = 1;
-
+        let part = 1;
         while (true) {
-            const result = await window.socialDB.exportStore(store, offset, MAX_CHUNK_ITEMS);
-            const items = result.items;
-
-            if (items.length > 0) {
+            const res = await window.socialDB.exportStore(store, offset, MAX_CHUNK_ITEMS);
+            if (res.items.length > 0) {
                 const dump = {
                     type: "SocialScraper_DB_Dump",
-                    version: 1,
                     store: store,
-                    timestamp: Date.now(),
-                    items: items,
+                    items: res.items,
                 };
-
-                const fname = `DB_${store}_Part${fileIndex}.json`;
-                downloadJSON(dump, fname);
-
-                fileIndex++;
-                offset += items.length;
+                downloadJSON(dump, `DB_${store}_Part${part}.json`);
+                part++;
+                offset += res.items.length;
             }
-
-            if (!result.hasMore) break;
-            if (fileIndex > 200) break;
+            if (!res.hasMore) break;
         }
     }
 }

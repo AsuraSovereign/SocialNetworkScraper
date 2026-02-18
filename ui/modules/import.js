@@ -114,7 +114,43 @@ async function handleImport() {
 
                 const zip = await window.JSZip.loadAsync(file);
 
-                // 1. Look for Thumbnails Metadata
+                // 0. Check for Snapshot Manifest
+                const manifestFile = zip.file("snapshot.json");
+                if (manifestFile) {
+                    try {
+                        const manifestText = await manifestFile.async("string");
+                        const manifest = JSON.parse(manifestText);
+                        addLog(`Snapshot detected (v${manifest.version || "?"}) created at ${manifest.created || "?"}`);
+                    } catch (e) {
+                        console.warn("Invalid snapshot manifest", e);
+                    }
+                }
+
+                // 1. Import Media Metadata (media.json)
+                const mediaFile = zip.file("media.json");
+                if (mediaFile) {
+                    addLog("Found media.json in ZIP. Importing metadata...");
+                    try {
+                        const mediaText = await mediaFile.async("string");
+                        const mediaData = JSON.parse(mediaText);
+
+                        let items = [];
+                        if (Array.isArray(mediaData)) items = mediaData;
+                        else if (mediaData.items) items = mediaData.items;
+
+                        if (items.length > 0) {
+                            const res = await window.socialDB.importData("media", items, mode);
+                            addLog(`Media Import: ${res.success} imported, ${res.errors} skipped/failed.`);
+                            totalItemsImported += res.success;
+                            totalErrors += res.errors;
+                        }
+                    } catch (e) {
+                        addLog(`Error importing media.json: ${e.message}`);
+                        totalErrors++;
+                    }
+                }
+
+                // 2. Look for Thumbnails Metadata
                 const metaFile = zip.file("thumbnails_meta.json");
                 if (metaFile) {
                     addLog("Found thumbnails_meta.json. Importing thumbnails...");
@@ -134,8 +170,11 @@ async function handleImport() {
                     const BATCH_SIZE = 50;
 
                     for (const meta of metaItems) {
-                        if (meta._zipFileName) {
-                            const blobFile = zip.file(meta._zipFileName);
+                        // Check for key variations: _zipFileName (legacy/export.js) or _zipPath (new)
+                        const zipPath = meta._zipPath || meta._zipFileName;
+
+                        if (zipPath) {
+                            const blobFile = zip.file(zipPath);
                             if (blobFile) {
                                 const blobData = await blobFile.async("blob");
                                 // Reconstruct Blob with correct type
@@ -143,10 +182,18 @@ async function handleImport() {
 
                                 const newItem = { ...meta };
                                 delete newItem._zipFileName;
+                                delete newItem._zipPath;
                                 delete newItem._contentType;
                                 newItem.blob = finalBlob;
 
-                                batch.push(newItem);
+                                // Ensure URL is key (if missing, maybe skip or use ID?)
+                                if (!newItem.url && newItem.thumbnailUrl) newItem.url = newItem.thumbnailUrl;
+
+                                if (newItem.url) {
+                                    batch.push(newItem);
+                                } else {
+                                    zipErrors++;
+                                }
                             } else {
                                 zipErrors++;
                             }
@@ -169,10 +216,10 @@ async function handleImport() {
                     addLog(`Thumbnails Import: ${zipSuccess} imported, ${zipErrors} skipped/failed.`);
                     totalItemsImported += zipSuccess;
                     totalErrors += zipErrors;
-                } else {
-                    addLog("No thumbnails_meta.json found in ZIP. Checking for other JSON dumps...");
-                    // Optional: Iterate root files to see if any are JSON dumps
-                    // For now, just log warning if strictly a thumbnail zip was expected.
+                }
+
+                if (!mediaFile && !metaFile) {
+                    addLog("No recognizable data (media.json or thumbnails_meta.json) found in ZIP.");
                 }
             } else {
                 // --- Standard JSON Import ---

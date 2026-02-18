@@ -107,10 +107,26 @@
                 <div id="opt-db" style="display: none;">
                     <label>Export Type</label>
                     <select id="db-export-type" class="modern-select">
-                        <option value="full">Full DB Export (JSON)</option>
-                        <option value="snapshot">Snapshot (Incremental)</option>
+                        <option value="snapshot">Snapshot (ZIP)</option>
+                        <option value="full">Metadata Only (JSON)</option>
                         <option value="single">Single Store</option>
                     </select>
+
+                    <!-- Incremental Info / Force Full Option -->
+                    <div id="db-snapshot-options" style="margin-top: 15px; padding: 10px; background: rgba(0, 242, 234, 0.05); border-radius: 6px; border: 1px solid rgba(0, 242, 234, 0.2);">
+                        <div style="font-size: 0.85rem; color: #aaa; margin-bottom: 8px;">
+                            Last Snapshot: <span id="last-snapshot-time" style="color: #fff; font-weight: bold;">Never</span>
+                        </div>
+                        
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="db-force-full-snapshot">
+                            <span class="slider"></span>
+                        </label>
+                        <span style="margin-left: 10px; color: #e0e0e0; font-size: 0.9rem;">Force Full Backup</span>
+                        <div style="font-size: 0.75rem; color: #888; margin-top: 4px; margin-left: 44px;">
+                            Ignore last snapshot time and export everything.
+                        </div>
+                    </div>
 
                     <div id="db-store-select" style="display: none; margin-top: 10px;">
                         <label>Select Store</label>
@@ -120,8 +136,8 @@
                         </select>
                     </div>
 
-                    <div style="margin-top: 15px;">
-                        <label class="toggle-switch">
+                    <div id="db-include-thumbs-wrapper" style="margin-top: 15px; display: none;">
+                         <label class="toggle-switch">
                             <input type="checkbox" id="db-include-thumbnails">
                             <span class="slider"></span>
                         </label>
