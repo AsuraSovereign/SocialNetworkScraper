@@ -548,8 +548,6 @@ class StorageUtils {
             /**
              * Fast size estimation via property walking.
              * Avoids JSON.stringify which is O(n) per object and chokes on blobs.
-             * Estimates: 8 bytes per number, string.length*2 for strings,
-             * blob.size for blobs, 4 bytes for booleans, recurse for objects.
              */
             const estimateObjectSize = (obj, depth = 0) => {
                 if (obj == null) return 4;
@@ -561,20 +559,20 @@ class StorageUtils {
                 // Blob/File — use native .size property
                 if (obj instanceof Blob) return obj.size;
                 if (Array.isArray(obj)) {
-                    let s = 16; // array overhead
+                    let s = 16;
                     for (let i = 0; i < obj.length; i++) s += estimateObjectSize(obj[i], depth + 1);
                     return s;
                 }
                 if (type === "object") {
-                    let s = 32; // object overhead
+                    let s = 32;
                     const keys = Object.keys(obj);
                     for (let i = 0; i < keys.length; i++) {
-                        s += keys[i].length * 2; // key
-                        s += estimateObjectSize(obj[keys[i]], depth + 1); // value
+                        s += keys[i].length * 2;
+                        s += estimateObjectSize(obj[keys[i]], depth + 1);
                     }
                     return s;
                 }
-                return 8; // fallback
+                return 8;
             };
 
             // Get total counts for progress tracking
@@ -600,10 +598,9 @@ class StorageUtils {
             let processed = 0;
             let lastReportedPct = -1;
 
-            // Report progress at 5% increments (was 10%)
             const reportProgress = () => {
                 const pct = Math.floor((processed / grandTotal) * 100);
-                const bucket = Math.floor(pct / 5) * 5; // Round down to nearest 5
+                const bucket = Math.floor(pct / 5) * 5;
                 if (bucket > lastReportedPct) {
                     lastReportedPct = bucket;
                     setStatus("CALCULATING", bucket);
@@ -611,76 +608,79 @@ class StorageUtils {
                 }
             };
 
-            // Initial status
             setStatus("CALCULATING", 0);
-            console.log(`[Storage] Starting size calculation: ${grandTotal} items (${totalMedia} media + ${totalThumbs} thumbnails)`);
+            console.log(`[Storage] Starting size calculation: ${grandTotal} items`);
 
-            // --- Phase 1: Media size (with per-user tracking) ---
-            let mediaSize = 0;
-            const userSizes = {}; // Track per-user byte sizes
+            // --- Generic Chunked Processor ---
+            const processStoreChunked = async (storeName, onProcess) => {
+                let lastKey = null;
+                let hasMore = true;
 
-            await new Promise((resolve, reject) => {
-                const tx = this.db.transaction(["media"], "readonly");
-                const store = tx.objectStore("media");
-                const req = store.openCursor();
-
-                req.onsuccess = (e) => {
-                    const cursor = e.target.result;
-                    if (cursor) {
-                        const m = cursor.value;
-                        const itemSize = estimateObjectSize(m);
-                        mediaSize += itemSize;
-                        processed++;
-
-                        // Track per-user sizes for "Top User (Space)"
-                        if (m.userId) {
-                            userSizes[m.userId] = (userSizes[m.userId] || 0) + itemSize;
-                        }
-
-                        reportProgress();
-
-                        if (processed % CHUNK_SIZE === 0) {
-                            setTimeout(() => cursor.continue(), YIELD_MS);
-                        } else {
-                            cursor.continue();
-                        }
-                    } else {
-                        resolve();
+                while (hasMore) {
+                    // Yield to event loop between chunks to keep UI responsive
+                    if (processed > 0) {
+                        await new Promise((r) => setTimeout(r, YIELD_MS));
                     }
-                };
-                req.onerror = () => reject(req.error);
+
+                    const result = await new Promise((resolve, reject) => {
+                        const tx = this.db.transaction([storeName], "readonly");
+                        const store = tx.objectStore(storeName);
+                        // Resume from lastKey if valid
+                        const range = lastKey ? IDBKeyRange.lowerBound(lastKey, true) : null;
+                        const req = store.openCursor(range);
+
+                        let chunkCount = 0;
+                        let currentKey = lastKey;
+
+                        req.onsuccess = (e) => {
+                            const cursor = e.target.result;
+                            if (!cursor) {
+                                // End of store
+                                resolve({ lastKey: currentKey, hasMore: false });
+                                return;
+                            }
+
+                            onProcess(cursor.value);
+                            currentKey = cursor.key;
+                            chunkCount++;
+                            processed++;
+                            reportProgress();
+
+                            if (chunkCount < CHUNK_SIZE) {
+                                cursor.continue();
+                            } else {
+                                // Chunk limit reached, pause here
+                                resolve({ lastKey: currentKey, hasMore: true });
+                            }
+                        };
+                        req.onerror = () => reject(req.error);
+                    });
+
+                    lastKey = result.lastKey;
+                    hasMore = result.hasMore;
+                }
+            };
+
+            // --- Phase 1: Media size ---
+            let mediaSize = 0;
+            const userSizes = {};
+
+            await processStoreChunked("media", (m) => {
+                const itemSize = estimateObjectSize(m);
+                mediaSize += itemSize;
+                if (m.userId) {
+                    userSizes[m.userId] = (userSizes[m.userId] || 0) + itemSize;
+                }
             });
 
             // --- Phase 2: Thumbnail size ---
             let thumbSize = 0;
 
-            await new Promise((resolve, reject) => {
-                const tx = this.db.transaction(["thumbnails"], "readonly");
-                const store = tx.objectStore("thumbnails");
-                const req = store.openCursor();
-
-                req.onsuccess = (e) => {
-                    const cursor = e.target.result;
-                    if (cursor) {
-                        const t = cursor.value;
-                        // Use blob.size directly for binary data — fast and accurate
-                        thumbSize += t.blob && t.blob.size ? t.blob.size : estimateObjectSize(t);
-                        processed++;
-                        reportProgress();
-
-                        if (processed % CHUNK_SIZE === 0) {
-                            setTimeout(() => cursor.continue(), YIELD_MS);
-                        } else {
-                            cursor.continue();
-                        }
-                    } else {
-                        resolve();
-                    }
-                };
-                req.onerror = () => reject(req.error);
+            await processStoreChunked("thumbnails", (t) => {
+                thumbSize += t.blob && t.blob.size ? t.blob.size : estimateObjectSize(t);
             });
 
-            // --- Phase 3: Determine top user by size ---
+            // --- Phase 3: Determine top user ---
             let topUser = { userId: "None", size: 0 };
             for (const [userId, size] of Object.entries(userSizes)) {
                 if (size > topUser.size) {
@@ -707,7 +707,7 @@ class StorageUtils {
                 ),
             );
 
-            console.log(`[Storage] Stats calculation complete: media=${mediaSize}, thumbs=${thumbSize}, total=${mediaSize + thumbSize}, topUser=${topUser.userId}`);
+            console.log(`[Storage] Stats calculation complete: total=${detailedStats.totalSizeBytes}`);
             return detailedStats;
         } catch (err) {
             console.error("[Storage] calculateDetailedStats error:", err);

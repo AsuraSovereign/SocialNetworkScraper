@@ -87,6 +87,79 @@ export function initDelete() {
         }
     });
 
+    const btnDeleteNoSnapshot = document.getElementById("btn-delete-no-snapshot");
+    if (btnDeleteNoSnapshot) {
+        btnDeleteNoSnapshot.addEventListener("click", async () => {
+            const pFilter = deletePlatform.value;
+            const uFilter = deleteUser.value;
+            const criteria = { platform: pFilter, userId: uFilter };
+
+            const count = await window.socialDB.countMedia(criteria);
+
+            if (count === 0) {
+                alert("No data to delete.");
+                return;
+            }
+
+            const confirmed = confirm(`Are you sure you want to PERMANENTLY delete ${count} items without taking a snapshot? This action cannot be undone.`);
+
+            if (confirmed) {
+                const originalText = btnDeleteNoSnapshot.textContent;
+                btnDeleteNoSnapshot.disabled = true;
+                btnDeleteNoSnapshot.textContent = "Gathering items...";
+
+                try {
+                    const BATCH_SIZE = 500;
+                    let offset = 0;
+                    let hasMore = true;
+                    const mediaIds = [];
+                    const thumbnailUrls = [];
+
+                    while (hasMore) {
+                        const result = await window.socialDB.queryMedia(criteria, offset, BATCH_SIZE);
+                        const batch = result.items;
+                        hasMore = result.hasMore;
+                        offset += BATCH_SIZE;
+
+                        for (const media of batch) {
+                            mediaIds.push(media.id);
+                            if (media.thumbnailUrl && !media.thumbnailUrl.startsWith("data:")) {
+                                thumbnailUrls.push(media.thumbnailUrl);
+                            }
+                        }
+                    }
+
+                    // Delete in batches to avoid locking DB for too long
+                    const DELETE_BATCH = 500;
+                    for (let i = 0; i < mediaIds.length; i += DELETE_BATCH) {
+                        const batchIds = mediaIds.slice(i, i + DELETE_BATCH);
+                        await window.socialDB.deleteBatch("media", batchIds);
+                        btnDeleteNoSnapshot.textContent = `Deleting Media... ${Math.min(i + DELETE_BATCH, mediaIds.length)}/${mediaIds.length}`;
+                    }
+
+                    // Delete Thumbnails
+                    if (thumbnailUrls.length > 0) {
+                        const uniqueThumbUrls = [...new Set(thumbnailUrls)];
+                        for (let i = 0; i < uniqueThumbUrls.length; i += DELETE_BATCH) {
+                            const batchUrls = uniqueThumbUrls.slice(i, i + DELETE_BATCH);
+                            await window.socialDB.deleteBatch("thumbnails", batchUrls);
+                            btnDeleteNoSnapshot.textContent = `Deleting Thumbs... ${Math.min(i + DELETE_BATCH, uniqueThumbUrls.length)}/${uniqueThumbUrls.length}`;
+                        }
+                    }
+
+                    alert("Deletion without snapshot successful.");
+                    updateDeletePreview();
+                } catch (err) {
+                    console.error("Delete process failed:", err);
+                    alert("Process failed: " + err.message);
+                } finally {
+                    btnDeleteNoSnapshot.disabled = false;
+                    btnDeleteNoSnapshot.textContent = originalText;
+                }
+            }
+        });
+    }
+
     updateDeletePreview(); // Initial load
 }
 
