@@ -67,7 +67,7 @@ async function startCachePopulation(silent = false) {
 
             if (cached) {
                 if (cached.error && now < cached.ttl) needsCache = false;
-                else if (now >= cached.ttl) needsCache = true;
+                else if (now >= cached.ttl) needsCache = false; //Ignore TTL for now
             }
 
             if (needsCache) itemsToProcess.push(media);
