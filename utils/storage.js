@@ -316,6 +316,56 @@ class StorageUtils {
     }
 
     /**
+     * Delete all orphaned thumbnails (thumbnails not referenced by any media)
+     */
+    async deleteOrphanedThumbnails() {
+        await this.init();
+        return new Promise((resolve, reject) => {
+            const transaction = this.db.transaction(["media", "thumbnails"], "readwrite");
+            const mediaStore = transaction.objectStore("media");
+            const thumbStore = transaction.objectStore("thumbnails");
+
+            // 1. Collect all referenced thumbnail URLs
+            const referencedUrls = new Set();
+            const mediaCursorReq = mediaStore.openCursor();
+
+            mediaCursorReq.onsuccess = (e) => {
+                const cursor = e.target.result;
+                if (cursor) {
+                    const m = cursor.value;
+                    if (m.thumbnailUrl && !m.thumbnailUrl.startsWith("data:")) {
+                        referencedUrls.add(m.thumbnailUrl);
+                    }
+                    cursor.continue();
+                } else {
+                    // 2. Iterate thumbnails and delete if not in referencedUrls
+                    let deletedCount = 0;
+                    const thumbCursorReq = thumbStore.openCursor();
+
+                    thumbCursorReq.onsuccess = (e2) => {
+                        const thumbCursor = e2.target.result;
+                        if (thumbCursor) {
+                            const t = thumbCursor.value;
+                            if (!referencedUrls.has(t.url)) {
+                                thumbCursor.delete();
+                                deletedCount++;
+                            }
+                            thumbCursor.continue();
+                        } else {
+                            // Finished deleting
+                            this._invalidateCache();
+                            resolve(deletedCount);
+                        }
+                    };
+                    thumbCursorReq.onerror = () => reject(thumbCursorReq.error);
+                }
+            };
+
+            mediaCursorReq.onerror = () => reject(mediaCursorReq.error);
+        });
+    }
+
+    /**
      * Metrics Calculation (Estimated Stats - O(1) Counts)
      * Returns fast counts immediately. Detailed size stats are calculated
      * asynchronously in the background and merged when available.

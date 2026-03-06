@@ -124,33 +124,52 @@ function populateSelect(id, userList) {
 
 function setupCacheButtons() {
     const btn = document.getElementById("btn-populate-cache");
-    if (!btn) return;
+    if (btn) {
+        // Direct listener attachment (no cloning needed as this runs once)
+        btn.addEventListener("click", () => {
+            // 1. Immediate Feedback
+            updateButtonState("REQUESTING");
 
-    // Direct listener attachment (no cloning needed as this runs once)
-    btn.addEventListener("click", () => {
-        // 1. Immediate Feedback
-        updateButtonState("REQUESTING");
+            // 2. Send Command
+            chrome.runtime.sendMessage({ action: "START_CACHE_POPULATION" }, (response) => {
+                // 3. Handle Communication Errors ONLY
+                if (chrome.runtime.lastError) {
+                    console.error(chrome.runtime.lastError);
+                    updateButtonState("ERROR");
+                    return;
+                }
 
-        // 2. Send Command
-        chrome.runtime.sendMessage({ action: "START_CACHE_POPULATION" }, (response) => {
-            // 3. Handle Communication Errors ONLY
-            if (chrome.runtime.lastError) {
-                console.error(chrome.runtime.lastError);
-                updateButtonState("ERROR");
-                return;
-            }
+                if (response && response.error) {
+                    alert("Error: " + response.error);
+                    updateButtonState("ERROR");
+                    return;
+                }
 
-            if (response && response.error) {
-                alert("Error: " + response.error);
-                updateButtonState("ERROR");
-                return;
-            }
-
-            // 4. On Success: Do NOTHING.
-            // We rely on the "CACHE_PROGRESS_UPDATE" message to update the UI.
-            // This prevents race conditions between this callback and the broadcast.
+                // 4. On Success: Do NOTHING.
+                // We rely on the "CACHE_PROGRESS_UPDATE" message to update the UI.
+                // This prevents race conditions between this callback and the broadcast.
+            });
         });
-    });
+    }
+
+    const btnClear = document.getElementById("btn-clear-cache");
+    if (btnClear) {
+        btnClear.addEventListener("click", async () => {
+            btnClear.textContent = "Clearing...";
+            btnClear.disabled = true;
+            try {
+                const deletedCount = await window.socialDB.deleteOrphanedThumbnails();
+                console.log(`[Stats] Cleared ${deletedCount} orphaned thumbnails.`);
+            } catch (err) {
+                console.error("[Stats] Error clearing orphaned thumbnails:", err);
+                alert("Error clearing orphaned thumbnails: " + err.message);
+            } finally {
+                btnClear.textContent = "Clear Cache";
+                btnClear.disabled = false;
+                renderStorageStats();
+            }
+        });
+    }
 }
 
 export function setupCacheProgressListener() {
