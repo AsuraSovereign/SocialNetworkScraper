@@ -1,96 +1,158 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Social Scraper</title>
+        <style>
+            body {
+                width: 300px;
+                font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+                background-color: #121212;
+                color: #ffffff;
+                margin: 0;
+                padding: 16px;
+            }
 
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Social Scraper</title>
-    <style>
-        body {
-            width: 300px;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background-color: #121212;
-            color: #ffffff;
-            margin: 0;
-            padding: 16px;
-        }
+            h1 {
+                font-size: 18px;
+                margin-top: 0;
+            }
 
-        h1 {
-            font-size: 18px;
-            margin-top: 0;
-        }
+            .btn {
+                display: block;
+                width: 100%;
+                padding: 10px;
+                margin-bottom: 10px;
+                border: none;
+                border-radius: 6px;
+                cursor: pointer;
+                font-weight: bold;
+                transition: transform 0.1s;
+            }
 
-        .btn {
-            display: block;
-            width: 100%;
-            padding: 10px;
-            margin-bottom: 10px;
-            border: none;
-            border-radius: 6px;
-            cursor: pointer;
-            font-weight: bold;
-            transition: transform 0.1s;
-        }
+            .btn:active {
+                transform: scale(0.98);
+            }
 
-        .btn:active {
-            transform: scale(0.98);
-        }
+            .btn-primary {
+                background-color: #00f2ea;
+                color: #000;
+            }
 
-        .btn-primary {
-            background-color: #00f2ea;
-            color: #000;
-        }
+            /* TikTok Cyan */
+            .btn-secondary {
+                background-color: #ff0050;
+                color: #fff;
+            }
 
-        /* TikTok Cyan */
-        .btn-secondary {
-            background-color: #ff0050;
-            color: #fff;
-        }
+            /* TikTok Red */
+            .btn-dashboard {
+                background-color: #333;
+                color: #fff;
+                border: 1px solid #555;
+            }
 
-        /* TikTok Red */
-        .btn-dashboard {
-            background-color: #333;
-            color: #fff;
-            border: 1px solid #555;
-        }
+            /* Dynamic Platform Colors */
+            .tiktok-theme .btn-primary {
+                background-color: #00f2ea;
+            }
 
-        /* Dynamic Platform Colors */
-        .tiktok-theme .btn-primary {
-            background-color: #00f2ea;
-        }
+            .fb-theme .btn-primary {
+                background-color: #1877f2;
+                color: #fff;
+            }
 
-        .fb-theme .btn-primary {
-            background-color: #1877F2;
-            color: #fff;
-        }
+            #status {
+                font-size: 12px;
+                color: #ccc;
+                margin-top: 8px;
+            }
 
-        #status {
-            font-size: 12px;
-            color: #ccc;
-            margin-top: 8px;
-        }
-    </style>
-</head>
+            /* Toggle Switch Styles */
+            .toggle-row {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                margin-top: 10px;
+                margin-bottom: 12px;
+                font-size: 14px;
+                color: #ccc;
+            }
 
-<body>
-    <h1>Social Scraper</h1>
-    <div style="margin-bottom: 12px;">
-        <label for="privacyMode" style="display:block; margin-bottom: 4px; font-size: 14px; color: #ccc;">Privacy
-            Mode</label>
-        <select id="privacyMode"
-            style="width: 100%; padding: 8px; border-radius: 4px; background: #333; color: #fff; border: 1px solid #555;">
-            <option value="HIDDEN_UNTIL_DONE">Hide until finished</option>
-            <option value="ALWAYS_HIDDEN">Always Hide</option>
-            <option value="OFF">Off</option>
-        </select>
-    </div>
-    <div id="actions">
-        <!-- Buttons injected by JS -->
-    </div>
-    <button id="openDashboard" class="btn btn-dashboard">Open Dashboard</button>
-    <div id="status">Ready</div>
+            .toggle-switch {
+                position: relative;
+                display: inline-block;
+                width: 40px;
+                height: 20px;
+            }
 
-    <script src="popup.js"></script>
-</body>
+            .toggle-switch input {
+                opacity: 0;
+                width: 0;
+                height: 0;
+            }
 
+            .slider {
+                position: absolute;
+                cursor: pointer;
+                top: 0;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                background-color: #333;
+                transition: 0.4s;
+                border-radius: 20px;
+                border: 1px solid #555;
+            }
+
+            .slider:before {
+                position: absolute;
+                content: "";
+                height: 14px;
+                width: 14px;
+                left: 2px;
+                bottom: 2px;
+                background-color: #ccc;
+                transition: 0.4s;
+                border-radius: 50%;
+            }
+
+            input:checked + .slider {
+                background-color: #00f2ea;
+                border-color: #00f2ea;
+            }
+
+            input:checked + .slider:before {
+                background-color: white;
+                transform: translateX(20px);
+            }
+        </style>
+    </head>
+
+    <body>
+        <h1>Social Scraper</h1>
+        <div style="margin-bottom: 12px">
+            <label for="privacyMode" style="display: block; margin-bottom: 4px; font-size: 14px; color: #ccc">Privacy Mode</label>
+            <select id="privacyMode" style="width: 100%; padding: 8px; border-radius: 4px; background: #333; color: #fff; border: 1px solid #555">
+                <option value="HIDDEN_UNTIL_DONE">Hide until finished</option>
+                <option value="ALWAYS_HIDDEN">Always Hide</option>
+                <option value="OFF">Off</option>
+            </select>
+        </div>
+        <div class="toggle-row">
+            <span>Efficient Scrolling</span>
+            <label class="toggle-switch">
+                <input type="checkbox" id="efficientScrolling" />
+                <span class="slider"></span>
+            </label>
+        </div>
+        <div id="actions">
+            <!-- Buttons injected by JS -->
+        </div>
+        <button id="openDashboard" class="btn btn-dashboard">Open Dashboard</button>
+        <div id="status">Ready</div>
+
+        <script src="popup.js"></script>
+    </body>
 </html>

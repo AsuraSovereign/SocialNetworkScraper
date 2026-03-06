@@ -20,20 +20,32 @@ async function init() {
     if (!tab.url) return;
 
     const privacySelect = document.getElementById("privacyMode");
+    const efficientToggle = document.getElementById("efficientScrolling");
 
-    // Load saved setting
-    chrome.storage.local.get(["privacySetting"], (result) => {
+    // Load saved settings
+    chrome.storage.local.get(["privacySetting", "efficientScrolling"], (result) => {
         if (result.privacySetting) {
             privacySelect.value = result.privacySetting;
         } else {
             // Default
             privacySelect.value = "HIDDEN_UNTIL_DONE";
         }
+
+        if (result.efficientScrolling !== undefined) {
+            efficientToggle.checked = result.efficientScrolling;
+        } else {
+            // Default to true
+            efficientToggle.checked = true;
+        }
     });
 
     // Save on change
     privacySelect.addEventListener("change", () => {
         chrome.storage.local.set({ privacySetting: privacySelect.value });
+    });
+
+    efficientToggle.addEventListener("change", () => {
+        chrome.storage.local.set({ efficientScrolling: efficientToggle.checked });
     });
 
     if (tab.url.includes("tiktok.com")) {
@@ -43,10 +55,11 @@ async function init() {
         scrapeBtn.textContent = "Start TikTok Scrape";
         scrapeBtn.onclick = async () => {
             const privacySetting = privacySelect.value;
+            const efficientScrolling = efficientToggle.checked;
             statusDiv.textContent = "Initializing...";
 
             // Try sending message first
-            chrome.tabs.sendMessage(tab.id, { action: "START_SCRAPE_TIKTOK", privacySetting }, (response) => {
+            chrome.tabs.sendMessage(tab.id, { action: "START_SCRAPE_TIKTOK", privacySetting, efficientScrolling }, (response) => {
                 if (chrome.runtime.lastError) {
                     // Content script likely not loaded.
                     // Dynamic injection of modules is flaky; asking user to reload is robust.

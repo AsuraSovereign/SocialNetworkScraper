@@ -11,10 +11,10 @@ class BaseScraper {
 
     /**
      * Sleep utility
-     * @param {number} ms 
+     * @param {number} ms
      */
     async sleep(ms) {
-        return new Promise(resolve => setTimeout(resolve, ms));
+        return new Promise((resolve) => setTimeout(resolve, ms));
     }
 
     /**
@@ -22,9 +22,10 @@ class BaseScraper {
      * @param {number} maxScrolls - Safety limit
      * @param {number} interval - Time between scrolls
      * @param {Function} checkStopCondition - Optional callback to stop early
+     * @param {boolean} efficientScrolling - Whether to clean up older nodes from memory
      */
-    async autoScroll(maxScrolls = 100, interval = 1000, checkStopCondition = null) {
-        console.log(`[${this.platformName}] Starting auto-scroll...`);
+    async autoScroll(maxScrolls = 100, interval = 1000, checkStopCondition = null, efficientScrolling = true) {
+        console.log(`[${this.platformName}] Starting auto-scroll... Efficient memory: ${efficientScrolling}`);
         let currentScroll = 0;
         let lastHeight = document.body.scrollHeight;
         let noChangeCount = 0;
@@ -45,14 +46,50 @@ class BaseScraper {
                 lastHeight = newHeight;
             }
 
-            if (checkStopCondition && await checkStopCondition()) {
+            if (checkStopCondition && (await checkStopCondition())) {
                 console.log(`[${this.platformName}] Stop condition met.`);
                 break;
+            }
+
+            if (efficientScrolling) {
+                this.cleanupMemoryOffscreen();
             }
 
             currentScroll++;
         }
         console.log(`[${this.platformName}] Scroll finished.`);
+    }
+
+    /**
+     * Cleans up memory by removing source/data from media elements far above the viewport
+     * to keep the browser responsive during long scrolling sessions.
+     */
+    cleanupMemoryOffscreen() {
+        // Elements that are > 3000px above the top of the viewport
+        const threshold = -5000; //Tiktok videos are 200px tall, so we cleaning after 25 videos
+        // lines and each line contains 6 videos (25 * 6 = 150)
+
+        // Find videos
+        const videos = document.querySelectorAll("video");
+        videos.forEach((vid) => {
+            const rect = vid.getBoundingClientRect();
+            // If the bottom of the video is way above the screen, and it still holds a source
+            if (rect.bottom < threshold && vid.src && !vid.dataset.cleaned) {
+                try {
+                    vid.pause();
+                    vid.removeAttribute("src");
+                    vid.load(); // Forces browser to drop the media buffer
+                    vid.dataset.cleaned = "true";
+                } catch (e) {
+                    console.error("Error cleaning video memory:", e);
+                }
+            }
+        });
+
+        // For TikTok specifically, they use complex DOM structures for virtual rendering,
+        // so removing entire nodes often breaks infinite scrolling or causes layout shifts.
+        // Dropping the raw media source buffers from <video> tags gives the biggest performance win
+        // without risking the page breaking.
     }
 
     /**
@@ -68,8 +105,8 @@ class BaseScraper {
      * @returns {Array} - List of new items
      */
     filterNewItems(items) {
-        return items.filter(item => {
-            const key = typeof item === 'string' ? item : item.id;
+        return items.filter((item) => {
+            const key = typeof item === "string" ? item : item.id;
             if (this.scrapedItems.has(key)) return false;
             this.scrapedItems.add(key);
             return true;
@@ -85,38 +122,38 @@ class BaseScraper {
      * @param {string} message - Message to display
      * @param {string} type - 'success', 'error', 'info'
      */
-    showNotification(message, type = 'info') {
-        const id = 'social-scraper-notification';
+    showNotification(message, type = "info") {
+        const id = "social-scraper-notification";
         const existing = document.getElementById(id);
         if (existing) existing.remove();
 
-        const notification = document.createElement('div');
+        const notification = document.createElement("div");
         notification.id = id;
 
         // Dynamic Styles
-        const bgColor = type === 'success' ? '#10B981' : type === 'error' ? '#EF4444' : '#3B82F6';
-        const icon = type === 'success' ? '✓' : type === 'error' ? '✕' : 'ℹ';
+        const bgColor = type === "success" ? "#10B981" : type === "error" ? "#EF4444" : "#3B82F6";
+        const icon = type === "success" ? "✓" : type === "error" ? "✕" : "ℹ";
 
         Object.assign(notification.style, {
-            position: 'fixed',
-            top: '20px',
-            right: '20px',
-            zIndex: '999999',
-            backgroundColor: '#1F2937', // Dark gray
-            color: '#F9FAFB', // White
-            padding: '12px 24px',
-            borderRadius: '8px',
-            boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '12px',
+            position: "fixed",
+            top: "20px",
+            right: "20px",
+            zIndex: "999999",
+            backgroundColor: "#1F2937", // Dark gray
+            color: "#F9FAFB", // White
+            padding: "12px 24px",
+            borderRadius: "8px",
+            boxShadow: "0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)",
+            display: "flex",
+            alignItems: "center",
+            gap: "12px",
             fontFamily: "'Inter', system-ui, -apple-system, sans-serif",
-            fontSize: '14px',
-            fontWeight: '500',
+            fontSize: "14px",
+            fontWeight: "500",
             borderLeft: `4px solid ${bgColor}`,
-            transform: 'translateX(100%)',
-            opacity: '0',
-            transition: 'all 0.3s ease-in-out'
+            transform: "translateX(100%)",
+            opacity: "0",
+            transition: "all 0.3s ease-in-out",
         });
 
         notification.innerHTML = `
@@ -128,14 +165,14 @@ class BaseScraper {
 
         // Animate In
         requestAnimationFrame(() => {
-            notification.style.transform = 'translateX(0)';
-            notification.style.opacity = '1';
+            notification.style.transform = "translateX(0)";
+            notification.style.opacity = "1";
         });
 
         // Auto-remove
         setTimeout(() => {
-            notification.style.transform = 'translateX(100%)';
-            notification.style.opacity = '0';
+            notification.style.transform = "translateX(100%)";
+            notification.style.opacity = "0";
             setTimeout(() => notification.remove(), 300);
         }, 4000);
     }
@@ -145,42 +182,42 @@ class BaseScraper {
      * @param {string} mode - 'HIDDEN_UNTIL_DONE', 'ALWAYS_HIDDEN', 'OFF'
      */
     setPrivacyOverlay(mode) {
-        const id = 'social-scraper-privacy-overlay';
+        const id = "social-scraper-privacy-overlay";
         let overlay = document.getElementById(id);
 
-        if (mode === 'OFF') {
+        if (mode === "OFF") {
             if (overlay) overlay.remove();
             return;
         }
 
         if (!overlay) {
-            overlay = document.createElement('div');
+            overlay = document.createElement("div");
             overlay.id = id;
             Object.assign(overlay.style, {
-                position: 'fixed',
-                top: '0',
-                left: '0',
-                width: '100vw',
-                height: '100vh',
-                zIndex: '999990',
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                justifyContent: 'center',
-                color: '#ffffff',
-                fontFamily: 'system-ui, sans-serif',
-                transition: 'background-color 0.3s'
+                position: "fixed",
+                top: "0",
+                left: "0",
+                width: "100vw",
+                height: "100vh",
+                zIndex: "999990",
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                justifyContent: "center",
+                color: "#ffffff",
+                fontFamily: "system-ui, sans-serif",
+                transition: "background-color 0.3s",
             });
 
             // Inner container for content
-            const content = document.createElement('div');
+            const content = document.createElement("div");
             Object.assign(content.style, {
-                backgroundColor: 'rgba(0,0,0,0.85)',
-                padding: '40px',
-                borderRadius: '16px',
-                textAlign: 'center',
-                backdropFilter: 'blur(10px)',
-                border: '1px solid rgba(255,255,255,0.1)'
+                backgroundColor: "rgba(0,0,0,0.85)",
+                padding: "40px",
+                borderRadius: "16px",
+                textAlign: "center",
+                backdropFilter: "blur(10px)",
+                border: "1px solid rgba(255,255,255,0.1)",
             });
 
             content.innerHTML = `
@@ -212,38 +249,38 @@ class BaseScraper {
             overlay.appendChild(content);
 
             // Background masker
-            const masker = document.createElement('div');
-            masker.id = 'privacy-masker';
+            const masker = document.createElement("div");
+            masker.id = "privacy-masker";
             Object.assign(masker.style, {
-                position: 'absolute',
-                top: '0',
-                left: '0',
-                width: '100%',
-                height: '100%',
-                backgroundColor: '#000',
-                zIndex: '-1'
+                position: "absolute",
+                top: "0",
+                left: "0",
+                width: "100%",
+                height: "100%",
+                backgroundColor: "#000",
+                zIndex: "-1",
             });
             overlay.appendChild(masker);
 
             document.body.appendChild(overlay);
 
             // Event Listeners
-            const peekToggle = overlay.querySelector('#privacy-peek-toggle');
-            peekToggle.addEventListener('change', (e) => {
+            const peekToggle = overlay.querySelector("#privacy-peek-toggle");
+            peekToggle.addEventListener("change", (e) => {
                 if (e.target.checked) {
-                    masker.style.opacity = '0';
-                    overlay.style.pointerEvents = 'none'; // Click-through when peeking
-                    content.style.pointerEvents = 'auto'; // Keep controls interactive
-                    content.style.opacity = '0.7';
+                    masker.style.opacity = "0";
+                    overlay.style.pointerEvents = "none"; // Click-through when peeking
+                    content.style.pointerEvents = "auto"; // Keep controls interactive
+                    content.style.opacity = "0.7";
                 } else {
-                    masker.style.opacity = '1';
-                    overlay.style.pointerEvents = 'auto';
-                    content.style.opacity = '1';
+                    masker.style.opacity = "1";
+                    overlay.style.pointerEvents = "auto";
+                    content.style.opacity = "1";
                 }
             });
 
-            const dismissBtn = overlay.querySelector('#privacy-dismiss-btn');
-            dismissBtn.addEventListener('click', () => {
+            const dismissBtn = overlay.querySelector("#privacy-dismiss-btn");
+            dismissBtn.addEventListener("click", () => {
                 overlay.remove();
             });
         }
@@ -253,11 +290,11 @@ class BaseScraper {
      * Updates the overlay state (e.g. show dismiss button)
      */
     updatePrivacyOverlayState(state) {
-        const dismissBtn = document.getElementById('privacy-dismiss-btn');
+        const dismissBtn = document.getElementById("privacy-dismiss-btn");
         if (dismissBtn) {
-            if (state === 'DONE') {
-                dismissBtn.textContent = 'Scraping Complete - Dismiss';
-                dismissBtn.style.display = 'block';
+            if (state === "DONE") {
+                dismissBtn.textContent = "Scraping Complete - Dismiss";
+                dismissBtn.style.display = "block";
             }
         }
     }

@@ -1,7 +1,47 @@
 class TikTokScraper extends BaseScraper {
-    constructor(privacySetting = "HIDDEN_UNTIL_DONE") {
+    constructor(privacySetting = "HIDDEN_UNTIL_DONE", efficientScrolling = true) {
         super("TikTok");
         this.privacySetting = privacySetting;
+        this.efficientScrolling = efficientScrolling;
+        this.newLinksBuffer = new Set();
+        this.observer = null;
+        this.topUser = null;
+    }
+
+    startObserver() {
+        this.observer = new MutationObserver((mutations) => {
+            for (const mutation of mutations) {
+                if (mutation.type === "childList") {
+                    mutation.addedNodes.forEach((node) => {
+                        if (node.nodeType === 1) {
+                            // ELEMENT_NODE
+                            if (node.tagName === "A") {
+                                this.newLinksBuffer.add(node);
+                            } else {
+                                const anchors = node.querySelectorAll("a");
+                                anchors.forEach((a) => this.newLinksBuffer.add(a));
+                            }
+                        }
+                    });
+                }
+            }
+        });
+
+        this.observer.observe(document.body, {
+            childList: true,
+            subtree: true,
+        });
+
+        // Also add existing links to the buffer on start
+        document.querySelectorAll("a").forEach((a) => this.newLinksBuffer.add(a));
+    }
+
+    stopObserver() {
+        if (this.observer) {
+            this.observer.disconnect();
+            this.observer = null;
+        }
+        this.newLinksBuffer.clear();
     }
 
     /**
@@ -34,20 +74,27 @@ class TikTokScraper extends BaseScraper {
         this.showNotification("Starting TikTok Scrape...", "info");
         console.log("Starting TikTok Scrape...");
 
+        this.startObserver();
+
         try {
             // 1. Auto-scroll to load content
             // We pass a callback to extraction logic to run periodically if we wanted "EVERYLOOP" mode,
             // but typically we scroll first then extract, or extract incrementally.
             // For this implementation, we'll try to extract periodically to be safe against crashes.
 
-            await this.autoScroll(200, 2000, async () => {
-                // Optional: Run extraction every scroll to save progress?
-                // For now, let's just scroll then extract at the end for simplicity,
-                // but the user's original script supported "EVERYLOOP".
-                // Let's implement incremental saving.
-                await this.extractAndSave();
-                return false; // Don't stop scrolling yet
-            });
+            await this.autoScroll(
+                200,
+                2000,
+                async () => {
+                    // Optional: Run extraction every scroll to save progress?
+                    // For now, let's just scroll then extract at the end for simplicity,
+                    // but the user's original script supported "EVERYLOOP".
+                    // Let's implement incremental saving.
+                    await this.extractAndSave();
+                    return false; // Don't stop scrolling yet
+                },
+                this.efficientScrolling,
+            );
 
             // Final pass - Force update of any data URIs
             await this.extractAndSave(true);
@@ -55,6 +102,7 @@ class TikTokScraper extends BaseScraper {
             console.error("Scrape error:", err);
             this.showNotification("Scrape error occurred", "error");
         } finally {
+            this.stopObserver();
             this.stop();
 
             if (this.privacySetting === "HIDDEN_UNTIL_DONE") {
@@ -121,7 +169,15 @@ class TikTokScraper extends BaseScraper {
 
     async extractAndSave(forceScan = false) {
         // Get all anchors
-        const links = Array.from(document.querySelectorAll("a"));
+        let links;
+        if (forceScan) {
+            links = Array.from(document.querySelectorAll("a"));
+        } else {
+            links = Array.from(this.newLinksBuffer);
+            this.newLinksBuffer.clear();
+        }
+
+        if (links.length === 0) return;
 
         // Map to objects first so we keep the element reference
         const potentialItems = links
@@ -131,29 +187,34 @@ class TikTokScraper extends BaseScraper {
                 user: this.getUsernameFromUrl(a.href),
             }))
             .filter((item) => item.href.includes("/video/") || item.href.includes("/photo/"));
-        let topUser = "UNKNOWN";
 
-        const locationUser = this.getUsernameFromUrl(location.href);
-        console.log(locationUser);
-        if (locationUser != "") {
-            topUser = locationUser;
-        } else {
-            // Identify Scraped User (Most frequent user in list)
-            let maxCount = 0;
-            const userCounts = {};
+        if (this.topUser === null) {
+            const locationUser = this.getUsernameFromUrl(location.href);
+            console.log(locationUser);
+            if (locationUser != "") {
+                this.topUser = locationUser;
+            } else {
+                // Identify Scraped User (Most frequent user in list based on full document scan once)
+                let maxCount = 0;
+                const userCounts = {};
+                const allLinks = Array.from(document.querySelectorAll("a"));
+                const allPotentialItems = allLinks.map((a) => ({ user: this.getUsernameFromUrl(a.href) })).filter((item) => item.user);
 
-            potentialItems.forEach((item) => {
-                if (item.user) {
+                allPotentialItems.forEach((item) => {
                     userCounts[item.user] = (userCounts[item.user] || 0) + 1;
                     if (userCounts[item.user] > maxCount) {
                         maxCount = userCounts[item.user];
-                        topUser = item.user;
+                        this.topUser = item.user;
                     }
-                }
-            });
+                });
+
+                if (!this.topUser) this.topUser = "UNKNOWN";
+            }
         }
 
-        if (topUser === "UNKNOWN") return;
+        if (this.topUser === "UNKNOWN" || !this.topUser) return;
+
+        const topUser = this.topUser;
 
         // Filter items belonging to the Top User
         const targetItems = potentialItems.filter((item) => item.user === topUser);
@@ -217,8 +278,8 @@ class TikTokScraper extends BaseScraper {
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === "START_SCRAPE_TIKTOK") {
         console.log("Received START_SCRAPE_TIKTOK", request);
-        const scraper = new TikTokScraper(request.privacySetting);
-        console.log("Created Scraper with privacySetting:", scraper.privacySetting);
+        const scraper = new TikTokScraper(request.privacySetting, request.efficientScrolling);
+        console.log("Created Scraper with privacySetting:", scraper.privacySetting, "efficientScrolling:", scraper.efficientScrolling);
         scraper.scrape().then(() => sendResponse({ status: "done" }));
         return true; // async response
     }
