@@ -22,9 +22,9 @@ class BaseScraper {
      * @param {number} maxScrolls - Safety limit
      * @param {number} interval - Time between scrolls
      * @param {Function} checkStopCondition - Optional callback to stop early
-     * @param {boolean} efficientScrolling - Whether to clean up older nodes from memory
+     * @param {string|boolean} efficientScrolling - "Off", "Efficient", "Aggressive" modes or boolean
      */
-    async autoScroll(maxScrolls = 100, interval = 1000, checkStopCondition = null, efficientScrolling = true) {
+    async autoScroll(maxScrolls = 100, interval = 1000, checkStopCondition = null, efficientScrolling = "Efficient") {
         console.log(`[${this.platformName}] Starting auto-scroll... Efficient memory: ${efficientScrolling}`);
         let currentScroll = 0;
         let lastHeight = document.body.scrollHeight;
@@ -51,7 +51,7 @@ class BaseScraper {
                 break;
             }
 
-            if (efficientScrolling) {
+            if (efficientScrolling === true || efficientScrolling === "Efficient") {
                 this.cleanupMemoryOffscreen();
             }
 

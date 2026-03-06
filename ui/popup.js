@@ -20,7 +20,7 @@ async function init() {
     if (!tab.url) return;
 
     const privacySelect = document.getElementById("privacyMode");
-    const efficientToggle = document.getElementById("efficientScrolling");
+    const efficientSelect = document.getElementById("efficientScrolling");
 
     // Load saved settings
     chrome.storage.local.get(["privacySetting", "efficientScrolling"], (result) => {
@@ -32,10 +32,11 @@ async function init() {
         }
 
         if (result.efficientScrolling !== undefined) {
-            efficientToggle.checked = result.efficientScrolling;
+            // handle string values
+            efficientSelect.value = result.efficientScrolling === true ? "Efficient" : result.efficientScrolling === false ? "Off" : result.efficientScrolling;
         } else {
-            // Default to true
-            efficientToggle.checked = true;
+            // Default to "Efficient"
+            efficientSelect.value = "Efficient";
         }
     });
 
@@ -44,8 +45,8 @@ async function init() {
         chrome.storage.local.set({ privacySetting: privacySelect.value });
     });
 
-    efficientToggle.addEventListener("change", () => {
-        chrome.storage.local.set({ efficientScrolling: efficientToggle.checked });
+    efficientSelect.addEventListener("change", () => {
+        chrome.storage.local.set({ efficientScrolling: efficientSelect.value });
     });
 
     if (tab.url.includes("tiktok.com")) {
@@ -55,7 +56,7 @@ async function init() {
         scrapeBtn.textContent = "Start TikTok Scrape";
         scrapeBtn.onclick = async () => {
             const privacySetting = privacySelect.value;
-            const efficientScrolling = efficientToggle.checked;
+            const efficientScrolling = efficientSelect.value;
             statusDiv.textContent = "Initializing...";
 
             // Try sending message first

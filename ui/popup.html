@@ -140,12 +140,13 @@
                 <option value="OFF">Off</option>
             </select>
         </div>
-        <div class="toggle-row">
-            <span>Efficient Scrolling</span>
-            <label class="toggle-switch">
-                <input type="checkbox" id="efficientScrolling" />
-                <span class="slider"></span>
-            </label>
+        <div style="margin-bottom: 12px">
+            <label for="efficientScrolling" style="display: block; margin-bottom: 4px; font-size: 14px; color: #ccc">Efficient Scrolling</label>
+            <select id="efficientScrolling" style="width: 100%; padding: 8px; border-radius: 4px; background: #333; color: #fff; border: 1px solid #555">
+                <option value="Off">Off</option>
+                <option value="Efficient">Efficient</option>
+                <option value="Aggressive">Aggressive</option>
+            </select>
         </div>
         <div id="actions">
             <!-- Buttons injected by JS -->

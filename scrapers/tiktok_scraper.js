@@ -1,5 +1,5 @@
 class TikTokScraper extends BaseScraper {
-    constructor(privacySetting = "HIDDEN_UNTIL_DONE", efficientScrolling = true) {
+    constructor(privacySetting = "HIDDEN_UNTIL_DONE", efficientScrolling = "Efficient") {
         super("TikTok");
         this.privacySetting = privacySetting;
         this.efficientScrolling = efficientScrolling;
@@ -91,6 +91,22 @@ class TikTokScraper extends BaseScraper {
                     // but the user's original script supported "EVERYLOOP".
                     // Let's implement incremental saving.
                     await this.extractAndSave();
+
+                    if (this.efficientScrolling === "Aggressive") {
+                        const postItems = document.getElementById("user-post-item-list");
+                        if (postItems && postItems.childNodes.length > 700) {
+                            console.log(`Aggressive cleanup triggered... Current items: ${postItems.childNodes.length}`);
+                            let count = 0;
+                            while (count < 500 && postItems.childNodes.length > 0) {
+                                postItems.removeChild(postItems.childNodes[0]);
+                                count++;
+                            }
+                            // Wait for DOM to 'reload' or stabilize after massive deletion
+                            await this.sleep(2000);
+                            console.log("Aggressive cleanup finished.");
+                        }
+                    }
+
                     return false; // Don't stop scrolling yet
                 },
                 this.efficientScrolling,
