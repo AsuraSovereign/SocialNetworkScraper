@@ -46,9 +46,18 @@ class BaseScraper {
                 lastHeight = newHeight;
             }
 
-            if (checkStopCondition && (await checkStopCondition())) {
-                console.log(`[${this.platformName}] Stop condition met.`);
-                break;
+            if (checkStopCondition) {
+                const stopResult = await checkStopCondition();
+                if (stopResult === true) {
+                    console.log(`[${this.platformName}] Stop condition met.`);
+                    break;
+                } else if (stopResult === "RESET_HEIGHT") {
+                    console.log(`[${this.platformName}] DOM heavily modified. Scrolling to top and resetting trackers.`);
+                    window.scrollTo(0, 0);
+                    await this.sleep(1000); // Let the page settle after jumping to top
+                    lastHeight = document.body.scrollHeight;
+                    noChangeCount = 0;
+                }
             }
 
             if (efficientScrolling === true || efficientScrolling === "Efficient") {
@@ -101,14 +110,35 @@ class BaseScraper {
 
     /**
      * Filters new items against already scraped ones
-     * @param {Array} items - List of strings or objects with 'id'
-     * @returns {Array} - List of new items
+     * Also re-includes items whose thumbnail upgraded from a data: URI to a real URL
+     * @param {Array} items - List of strings or objects with 'id' and optional 'thumbnailUrl'
+     * @returns {Array} - List of new items (by id/string key)
      */
     filterNewItems(items) {
         return items.filter((item) => {
-            const key = typeof item === "string" ? item : item.id;
-            if (this.scrapedItems.has(key)) return false;
+            const isObject = typeof item === "object" && item !== null;
+            const key = isObject ? item.id : item;
+            const thumbUrl = isObject ? item.thumbnailUrl : null;
+
+            if (this.scrapedItems.has(key)) {
+                // Re-include if the old thumbnail was a data: URI and now we have a real URL
+                if (thumbUrl && !thumbUrl.startsWith("data:")) {
+                    const prevThumb = this.scrapedThumbnails ? this.scrapedThumbnails.get(key) : null;
+                    if (prevThumb && prevThumb.startsWith("data:")) {
+                        // Thumbnail upgraded from data: to real URL — re-save
+                        this.scrapedThumbnails.set(key, thumbUrl);
+                        return true;
+                    }
+                }
+                return false;
+            }
+
             this.scrapedItems.add(key);
+            // Track thumbnail state for future comparisons
+            if (thumbUrl) {
+                if (!this.scrapedThumbnails) this.scrapedThumbnails = new Map();
+                this.scrapedThumbnails.set(key, thumbUrl);
+            }
             return true;
         });
     }

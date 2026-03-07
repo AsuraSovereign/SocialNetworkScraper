@@ -86,24 +86,21 @@ class TikTokScraper extends BaseScraper {
                 200,
                 2000,
                 async () => {
-                    // Optional: Run extraction every scroll to save progress?
-                    // For now, let's just scroll then extract at the end for simplicity,
-                    // but the user's original script supported "EVERYLOOP".
-                    // Let's implement incremental saving.
                     await this.extractAndSave();
 
                     if (this.efficientScrolling === "Aggressive") {
                         const postItems = document.getElementById("user-post-item-list");
-                        if (postItems && postItems.childNodes.length > 700) {
+                        if (postItems && postItems.childNodes.length > 400) {
                             console.log(`Aggressive cleanup triggered... Current items: ${postItems.childNodes.length}`);
                             let count = 0;
-                            while (count < 500 && postItems.childNodes.length > 0) {
+                            while (count < 200 && postItems.childNodes.length > 0) {
                                 postItems.removeChild(postItems.childNodes[0]);
                                 count++;
                             }
                             // Wait for DOM to 'reload' or stabilize after massive deletion
-                            await this.sleep(2000);
+                            await this.sleep(4000);
                             console.log("Aggressive cleanup finished.");
+                            return "RESET_HEIGHT"; // Signal loop to adjust height tracking
                         }
                     }
 
@@ -244,10 +241,15 @@ class TikTokScraper extends BaseScraper {
             console.log(`[ForceScan] Checking ${itemsToSave.length} items for thumbnail updates...`);
             this.showNotification(`Finalizing: checking ${itemsToSave.length} items for better thumbnails...`, "info");
         } else {
-            // Normal mode: only process new items
-            const newItems = this.filterNewItems(targetItems.map((i) => i.href));
+            // Normal mode: only process new items (pass thumbnail info for upgrade detection)
+            const itemsWithThumbs = targetItems.map((i) => ({
+                id: i.href,
+                thumbnailUrl: this.getThumbnailFromAnchor(i.element),
+            }));
+            const newItems = this.filterNewItems(itemsWithThumbs);
             if (newItems.length === 0) return;
-            itemsToSave = targetItems.filter((item) => newItems.includes(item.href));
+            const newItemIds = newItems.map((i) => (typeof i === "object" ? i.id : i));
+            itemsToSave = targetItems.filter((item) => newItemIds.includes(item.href));
         }
 
         if (itemsToSave.length === 0) return;
