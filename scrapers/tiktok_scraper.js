@@ -6,6 +6,7 @@ class TikTokScraper extends BaseScraper {
         this.newLinksBuffer = new Set();
         this.observer = null;
         this.topUser = null;
+        this.pendingInvalidItems = new Map(); // Track invalid thumbnails { href: { element, strikes } }
     }
 
     startObserver() {
@@ -63,6 +64,16 @@ class TikTokScraper extends BaseScraper {
     }
 
     /**
+     * Checks if a thumbnail URL is considered valid (not a base64 placeholder)
+     * @param {string|null} url
+     * @returns {boolean}
+     */
+    isValidThumbnail(url) {
+        if (!url) return false;
+        return !url.startsWith("data:image/");
+    }
+
+    /**
      * Main scrape execution context
      */
     async scrape() {
@@ -92,11 +103,43 @@ class TikTokScraper extends BaseScraper {
                         const postItems = document.getElementById("user-post-item-list");
                         if (postItems && postItems.childNodes.length > 400) {
                             console.log(`Aggressive cleanup triggered... Current items: ${postItems.childNodes.length}`);
+
+                            // Get a list of pending invalid hrefs for fast lookup
+                            const pendingHrefs = new Set(this.pendingInvalidItems.keys());
+
                             let count = 0;
-                            while (count < 200 && postItems.childNodes.length > 0) {
-                                postItems.removeChild(postItems.childNodes[0]);
-                                count++;
+                            let i = 0;
+
+                            while (count < 200 && i < postItems.childNodes.length) {
+                                const node = postItems.childNodes[i];
+
+                                // Rule A: Check if this node contains any pending invalid items
+                                let skipDeletion = false;
+                                if (node.nodeType === 1) {
+                                    // ELEMENT_NODE
+                                    const anchors = Array.from(node.querySelectorAll("a"));
+                                    for (const a of anchors) {
+                                        if (pendingHrefs.has(a.href)) {
+                                            const pendingData = this.pendingInvalidItems.get(a.href);
+                                            // Only save it if it hasn't completely struck out yet
+                                            if (pendingData && pendingData.strikes < 3) {
+                                                skipDeletion = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if (skipDeletion) {
+                                    // Skip this node, leave it in the DOM so it can load
+                                    i++;
+                                } else {
+                                    // Safe to delete
+                                    postItems.removeChild(node);
+                                    count++;
+                                }
                             }
+
                             // Wait for DOM to 'reload' or stabilize after massive deletion
                             await this.sleep(4000);
                             console.log("Aggressive cleanup finished.");
@@ -181,13 +224,30 @@ class TikTokScraper extends BaseScraper {
     }
 
     async extractAndSave(forceScan = false) {
+        // Cleanup map: remove items that are no longer in the DOM to prevent memory leaks
+        for (const [href, data] of this.pendingInvalidItems.entries()) {
+            if (!document.body.contains(data.element)) {
+                this.pendingInvalidItems.delete(href);
+            }
+        }
+
         // Get all anchors
         let links;
         if (forceScan) {
             links = Array.from(document.querySelectorAll("a"));
         } else {
+            // Merge newly observed links with still-pending invalid links
             links = Array.from(this.newLinksBuffer);
             this.newLinksBuffer.clear();
+
+            for (const data of this.pendingInvalidItems.values()) {
+                if (document.body.contains(data.element)) {
+                    links.push(data.element);
+                }
+            }
+
+            // Deduplicate the combined list
+            links = [...new Set(links)];
         }
 
         if (links.length === 0) return;
@@ -241,15 +301,69 @@ class TikTokScraper extends BaseScraper {
             console.log(`[ForceScan] Checking ${itemsToSave.length} items for thumbnail updates...`);
             this.showNotification(`Finalizing: checking ${itemsToSave.length} items for better thumbnails...`, "info");
         } else {
-            // Normal mode: only process new items (pass thumbnail info for upgrade detection)
-            const itemsWithThumbs = targetItems.map((i) => ({
+            // Normal mode: check for invalid thumbnails and enforce strikes
+            const validItems = [];
+
+            for (const item of targetItems) {
+                const thumbUrl = this.getThumbnailFromAnchor(item.element);
+                const isValid = this.isValidThumbnail(thumbUrl);
+
+                if (isValid) {
+                    // It's valid now. If it was pending, remove it.
+                    this.pendingInvalidItems.delete(item.href);
+                    validItems.push(item);
+                } else {
+                    // Invalid (base64 or null). Apply 3-Strike Rule B
+                    if (!this.pendingInvalidItems.has(item.href)) {
+                        this.pendingInvalidItems.set(item.href, { element: item.element, strikes: 0 });
+                    }
+
+                    const pendingData = this.pendingInvalidItems.get(item.href);
+
+                    // Only increment strikes in Aggressive Mode
+                    if (this.efficientScrolling === "Aggressive") {
+                        pendingData.strikes++;
+
+                        if (pendingData.strikes >= 3) {
+                            console.log(`[Strike 3] Removing element for invalid thumbnail: ${item.href}`);
+
+                            // Try to remove the parent container if we can find it
+                            // TikTok typically nests videos in divs within the user-post-item-list
+                            let parent = item.element;
+                            let removed = false;
+
+                            // Traverse up to find the direct child of user-post-item-list
+                            while (parent && parent !== document.body) {
+                                if (parent.parentNode && parent.parentNode.id === "user-post-item-list") {
+                                    parent.parentNode.removeChild(parent);
+                                    removed = true;
+                                    break;
+                                }
+                                parent = parent.parentNode;
+                            }
+
+                            // Fallback if structure is different
+                            if (!removed && item.element.parentNode) {
+                                item.element.parentNode.removeChild(item.element);
+                            }
+
+                            // Permanently drop from tracking map
+                            this.pendingInvalidItems.delete(item.href);
+                        }
+                    }
+                    // Do not push to validItems; skip saving for now
+                }
+            }
+
+            // check if the *valid* items are actually new to the database
+            const itemsWithThumbs = validItems.map((i) => ({
                 id: i.href,
                 thumbnailUrl: this.getThumbnailFromAnchor(i.element),
             }));
             const newItems = this.filterNewItems(itemsWithThumbs);
             if (newItems.length === 0) return;
             const newItemIds = newItems.map((i) => (typeof i === "object" ? i.id : i));
-            itemsToSave = targetItems.filter((item) => newItemIds.includes(item.href));
+            itemsToSave = validItems.filter((item) => newItemIds.includes(item.href));
         }
 
         if (itemsToSave.length === 0) return;

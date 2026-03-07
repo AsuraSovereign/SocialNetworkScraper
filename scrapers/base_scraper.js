@@ -121,7 +121,6 @@ class BaseScraper {
             const thumbUrl = isObject ? item.thumbnailUrl : null;
 
             if (this.scrapedItems.has(key)) {
-                // Re-include if the old thumbnail was a data: URI and now we have a real URL
                 if (thumbUrl && !thumbUrl.startsWith("data:")) {
                     const prevThumb = this.scrapedThumbnails ? this.scrapedThumbnails.get(key) : null;
                     if (prevThumb && prevThumb.startsWith("data:")) {
