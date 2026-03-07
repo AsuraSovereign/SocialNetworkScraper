@@ -129,7 +129,7 @@ class StorageUtils {
                         const existing = request.result;
                         // If exists and has a VALID thumbnail (not data URI), do NOT overwrite
                         if (existing && existing.thumbnailUrl && !existing.thumbnailUrl.startsWith("data:")) {
-                            console.log(`[Storage] Skipping overwrite of ${item.id} (Preserving existing valid thumbnail ${existing.thumbnailUrl})`);
+                            //console.log(`[Storage] Skipping overwrite of ${item.id} (Preserving existing valid thumbnail ${existing.thumbnailUrl})`);
                         } else {
                             console.log(`[Storage] Overwriting ${item.id} Old: ${existing.thumbnailUrl} New: ${item.thumbnailUrl}`);
                             // Overwrite if it didn't exist OR if existing was also a data URI
